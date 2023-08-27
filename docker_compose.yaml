@@ -1,0 +1,19 @@
+---
+version: "2.1"
+
+services:
+  # ##################################
+  autotranslate:
+    image: zorbatherainy/autotranslate
+    container_name: autotranslate
+    environment:
+      # - DEEPL_AUTH_KEY=aaa11111-a1aa-1a11-a1a1-a1a1aa11aaa1:aa            # (mandatory) get your key at https://www.deepl.com/account/summary
+      # - DEEPL_SERVER_URL=http://localhost:3000                            # (optional) "" (i.e., an empty string) is the actual DeepL server, anything else is for testing 
+      # - DEEPL_TARGET_LANG=EN-US                                           # (near mandatory)  The language isn't really changeable on the fly.  Assumes you want all your files translated to a common language
+      # - CHECK_EVERY_X_MINUTES=15                                          # (optional) How often you want the inputDir scanned for new files
+      # - DEEPL_USAGE_RENEWAL_DAY=1                                         # (optional) If you put the day of the month your DeepL allowance resets, then the expired usage sleeping will be more accurate.  Otherwise, it just waits 7 days before trying again.
+    volumes:
+      - /etc/localtime:/etc/localtime:ro                                    # sync to host time
+      - /volume1/translate/:/inputDir
+      - /volume1/consume/:/outputDir
+      - /volume1/autotranslate_logs/:/logDir
