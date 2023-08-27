@@ -116,7 +116,7 @@ AutoTranslate works really well with Paperless.
 
 ### Auto-Tagging and Consumption by Paperless
 
-Like AutoTranslate, Paperless works on a system where there is a monitored directory (named "consume") and files placed in that directory are moved to the Paperless database.  Chaining the AutoTranlate output directory to the Paperless input directory works very well.
+Like AutoTranslate, Paperless works on a system where there is a monitored directory (named "consume") and files placed in that directory are moved to the Paperless database.  Chaining the AutoTranlate output directory to the Paperless input/consume directory works very well.
 
 To turbo-charge this, make use of [Paperless's auto-tagging feature](https://docs.paperless-ngx.com/configuration/#consume_config).  Paperless can be setup to have sub-directories in the input/consume directory and to automatically tag any files in there with the sub-directory's name.  By placing the output of AutoTranslate into a Paperless sub-directory, you can tag (in Paperless) those files with the original language or another tag.
 
@@ -138,7 +138,7 @@ Again, look at [Paperless's consume config documentation](https://docs.paperless
 
 ### Pre-Consumption Script
 
-You could use the autotranslate.py Python script directly as a Paperless Pre-Consumption script.  The documentation for [the Pre-Consumption scrip function is here](https://docs.paperless-ngx.com/advanced_usage/#pre-consume-script).
+You could use the autotranslate.py Python script directly as a Paperless Pre-Consumption script.  The documentation for [the Pre-Consumption script function is here](https://docs.paperless-ngx.com/advanced_usage/#pre-consume-script).
 
 The reason I don't recommend this is because it would run all files imported/consumed into Paperless through the DeepL API, eating up you monthly quota.  But it is possible.
 
