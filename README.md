@@ -74,10 +74,10 @@ I use compose.  Conversion of the below into the command line command is "left a
 				# - ORIGINAL_BEFORE_TRANSLATION=0                                     # (optional) When appending the original and translated files, which should go first?
 				# - TRANSLATE_FILENAME=1                                              # (optional) Should the filename also be translated?
 			volumes:
-				- /etc/localtime:/etc/localtime:ro                                    # sync to host time
-				- /volume1/translate/:/inputDir
-				- /volume1/consume/:/outputDir
-				- /volume1/autotranslate_logs/:/logDir
+				- /etc/localtime:/etc/localtime:ro                                    # (optional) Sync to host time
+				- /volume1/translate/:/inputDir                                       # (mandatory) The directory where you put the un-translated file
+				- /volume1/consume/:/outputDir                                        # (mandatory) The directory where AutoTranslate will put the translated file
+				- /volume1/autotranslate_logs/:/logDir                                # (near mandatory) The directory where log files are stored, 1 per input file and a master log file
 
 
 
@@ -96,6 +96,14 @@ The only **mandatory** variable is the DEEPL_AUTH_KEY.
 | CHECK_EVERY_X_MINUTES   | 15    | The frequency at which the input directory will be scanned for any new files. |
 | ORIGINAL_BEFORE_TRANSLATION | false    | (> v2.1.3) When appending the original and translated files, which should go first? |
 | TRANSLATE_FILENAME      | true    | (> v2.2.0) Should the filename also be translated?  This is a bit experimental. |
+
+#### Volumes
+| Volume           | Purpose             |
+| ---------------------- | ------- |
+| inputDir | The directory where you put the un-translated PDF files.  Non-PDF files will be ignored. |
+| outputDir | The directory where AutoTranslate will put the translated PDF files, which have been appended to the original un-translated file. |
+| logDir | The directory where log files are stored, 1 per input file and a master log file (`_autotranslate.log`). |
+
 
 #### Other random quirks you may be interested in
 
