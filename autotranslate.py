@@ -1,5 +1,5 @@
 #!/usr/local/bin/python3
-# assumes Python 3.7.x
+# assumes Python >= 3.7.x
 import deepl                                     # pip3 install --upgrade deepl  # https://github.com/DeepLcom/deepl-python#configuration
 from pypdf import PdfMerger, PdfReader           # pip3 install pypdf
 from unidecode import unidecode                  # pip3 install unidecode
@@ -31,7 +31,7 @@ def translateDocument(inputDocument, outputDocument, targetLang):
   retVal = False
   try:
     # Using translate_document_from_filepath() with file paths 
-    translator.translate_document_from_filepath(
+    result = translator.translate_document_from_filepath(
         inputDocument,
         outputDocument,
         target_lang=targetLang,
@@ -69,8 +69,16 @@ def translateDocument(inputDocument, outputDocument, targetLang):
     docKey = m[2]
     logger.error(f"\tDocument ID:  {docID}")
     logger.error(f"\tDocument Key: {docKey}")
+    doc_id = error.document_handle.id
+    doc_key = error.document_handle.key
+    logger.error(f"\tDocument ID2:  {doc_id}")
+    logger.error(f"\tDocument Key2: {doc_key}")
     if errMsg == "Quota for this billing period has been exceeded.": # the error was that the quota was not empty, but still too low (note having to add the `.` because we added it in replace() above
       wasQuotaExceeded = True
+  except deepl.exceptions.QuotaExceededException as error:
+    wasQuotaExceeded = True
+    logger.error("The quota for this billing period has been exceeded.")
+    logger.error(f"{error}")
   except Exception as error:
     # Errors during upload raise a DeepLException
     logger.error("Unknown error occurred during the translation process.")
@@ -143,6 +151,9 @@ def getSafeFilename(inputFilename):
       fileExten = os.path.splitext(inputFilename)[1]
       inputFilename = fileRoot  + fileExten
       
+      # remove excessive spaces & convert whitespace to a single proper space
+      inputFilename = re.sub(r"\s.", " ", inputFilename)
+      
       # convert spaces to underscores
       inputFilename = inputFilename.replace(" ", "_")
       
@@ -150,6 +161,7 @@ def getSafeFilename(inputFilename):
       # carve out special characters that I don't think unidecode() does well
       inputFilename = inputFilename.replace("Å", "Aa")
       inputFilename = inputFilename.replace("å", "aa")
+      inputFilename = inputFilename.replace("¢", "ø")
       inputFilename = unidecode(inputFilename)
       
       # now brutally remove any non-ASCII, un-allowed characters
@@ -249,12 +261,12 @@ def sleepWithACountdown(secs, isTop=True):
       delayStr.append(f"{totalSleepTime} second(s)")
     tmpStr = ", ".join(delayStr)
     logger.info(f"Putting the program to sleep for {tmpStr}.")
-    logger.info(f"Counting down the sleep period ...")
+    # logger.info(f"Counting down the sleep period ...")
     
 
-  # turn off the logger's automatic NewLine for this subroutine
-    # origTerminator_CH = consoleHandler.terminator
-    # consoleHandler.terminator = ""
+    # turn off the logger's automatic NewLine for this subroutine
+      # origTerminator_CH = consoleHandler.terminator
+      # consoleHandler.terminator = ""
     if not (globalFileHandler is None): # note the creation of the GFL may have failed
       origTerminator_GFL = globalFileHandler.terminator
       globalFileHandler.terminator = ""
@@ -316,28 +328,39 @@ def sleepWithACountdown(secs, isTop=True):
       globalFileHandler.setFormatter(globalFileFormatter)
   return
 
-def numbOfSecsTillRenewal():
+def numbOfSecsTillRenewal(defaultPeriodToWait_Days=7):
   # calculates the number of seconds until the next renewal of the usage allowance.  Default is 7 days, or ENV{DEEPL_USAGE_RENEWAL_DAY} minus Now().
   
   # default value
-  waitUntilNewUsage_Days = 7 # default period to wait
-  waitUntilNewUsage_Sec = waitUntilNewUsage_Days * 24 * 60 * 60
+  # defaultPeriodToWait_Days = 7 # default period to wait
+  waitUntilNewUsage_Sec = defaultPeriodToWait_Days * 24 * 60 * 60
 
   # calculate the time to wait, if the usageRenewalDay value is set (default value is 0, which fails the if statement)
   logger.debug(f"\tnumbOfSecsTillRenewal() debug output ...")
   logger.debug(f"\tusageRenewalDay:         {usageRenewalDay}")
   if usageRenewalDay >= 1 and usageRenewalDay <= 31 : # use a more accurate day for the sleep time
     now_dateTime  = datetime.now()
-    lastRenewal_dateTime = datetime(now_dateTime.year, now_dateTime.month, usageRenewalDay)
-    nextRenewal_dateTime = lastRenewal_dateTime + relativedelta(days=1, months=1) # add 1 to the renewal date to avoid any corner case issues
+    if usageRenewalDay > now_dateTime.day:
+      lastRenewal_dateTime = datetime(now_dateTime.year, now_dateTime.month, usageRenewalDay) + relativedelta(months=-1)
+    else:
+      lastRenewal_dateTime = datetime(now_dateTime.year, now_dateTime.month, usageRenewalDay)
+    nextRenewal_dateTime = lastRenewal_dateTime + relativedelta(days=1, months=1) # add 1 day to the renewal date to avoid any corner case issues (time zone mismatch [local vs API servers] is really my concern)
     duration_dateTime = nextRenewal_dateTime - now_dateTime
     waitUntilNewUsage_Sec = duration_dateTime.total_seconds()
 
+    logger.debug(f"\tlastRenewal_dateTime = {lastRenewal_dateTime}")
     logger.debug(f"\tnow_dateTime = {now_dateTime}")
+    logger.debug(f"\tnow_dateTime (parts) = {now_dateTime.year} -- {now_dateTime.month} -- {now_dateTime.day}")
     logger.debug(f"\tnextRenewal_dateTime = {nextRenewal_dateTime}")
     logger.debug(f"\tduration_dateTime = {duration_dateTime}")
     logger.debug(f"\twaitUntilNewUsage_Sec = {waitUntilNewUsage_Sec}")
   return waitUntilNewUsage_Sec
+
+def reportResults():
+  logger.info(f"Final output report")
+  logger.info(f"\tFinal output report")
+  return
+  
 
   
 # ##################################################################
@@ -363,22 +386,22 @@ isInDocker      = bool(os.getenv("AM_I_IN_A_DOCKER_CONTAINER",0))            # (
   # see mock DeepL server at https://github.com/DeepLcom/deepl-mock
   # and the pre-made Docker image at https://hub.docker.com/r/thibauddemay/deepl-mock
 auth_key        =     os.getenv("DEEPL_AUTH_KEY", "ThisIsABogusTestingKey")  # (mandatory) get your key at https://www.deepl.com/account/usage
-serverURL       =     os.getenv("DEEPL_SERVER_URL", "")                      # (optional) "" is the actual DeppL server, anything else is for testing 
-targetLang      =     os.getenv("DEEPL_TARGET_LANG","EN-US")                 # (near mandatory)  The language isn't really changeable on the fly.  Assumes you want all your files translated to a common language
-checkPeriodMin  = int(os.getenv("CHECK_EVERY_X_MINUTES",15))                 # (optional) How often you want the inputDir scanned for new files
+serverURL       =     os.getenv("DEEPL_SERVER_URL", "")                      # (optional) "" (i.e., an empty string) uses the actual DeepL server, anything else is for testing 
+targetLang      =     os.getenv("DEEPL_TARGET_LANG","EN-US")                 # (near mandatory)  The language isn't really changeable on the fly.  Assumes you want all your files translated to the same language
 usageRenewalDay = int(os.getenv("DEEPL_USAGE_RENEWAL_DAY",0))                # (optional) If you put the day of the month your DeepL allowance resets, then the expired usage sleeping will be more accurate.  
+checkPeriodMin  = int(os.getenv("CHECK_EVERY_X_MINUTES",15))                 # (optional) How often you want the inputDir scanned for new files
 if isInDocker:
   inputDir  = "/inputDir/"   # mapped via Docker
   outputDir = "/outputDir/"  # mapped via Docker
   logDir    = "/logDir/"     # mapped via Docker
   tmpDir    = "/tmpDir/"     # hidden from outside Docker
 else:
-  inputDir  = "/mnt/Emby/0_not_media/translation_scripts/inputDir/"   # mapped via Docker
-  outputDir = "/mnt/Emby/0_not_media/translation_scripts/outputDir/"  # mapped via Docker
-  logDir    = "/mnt/Emby/0_not_media/translation_scripts/logDir/"     # mapped via Docker
-  tmpDir    = "/mnt/Emby/0_not_media/translation_scripts/tmpDir/"     # hidden from outside Docker
+  inputDir  = "/mnt/translation_scripts/inputDir/"   # un-translated docs go here
+  outputDir = "/mnt/translation_scripts/outputDir/"  # merged & translated docs go here
+  logDir    = "/mnt/translation_scripts/logDir/"     # log files go here
+  tmpDir    = "/mnt/translation_scripts/tmpDir/"     # translated but un-merged docs go here (before merging)
   # variables shown to outside world
-scriptVersion = "2.1.1b"
+scriptVersion = "2.1.2"
   # internal variables
 wasQuotaExceeded = False
 checkPeriodSec = checkPeriodMin * 60
@@ -433,8 +456,8 @@ if True:  # really just here for indentation and code folding purposes
   logger.debug(f"\tScript last modified:    {thisFilesLastModDate}")
 
 # check that the directories are OK
-if not os.access(inputDir, os.R_OK): # it would be best if you write/delete from inputDir, but it is not fatal if you can't
-  logger.error(f"Unable to read from input directory!")
+if not os.access(inputDir, os.W_OK): # need to write due to safe filename renaming
+  logger.error(f"Unable to write to input directory!")
   logger.error(f"\t{inputDir}")
   logger.error(f"FATAL ERROR!  Closing Program!")
   exitProgram()
@@ -448,7 +471,7 @@ if not os.access(tmpDir, os.W_OK):
   logger.error(f"\t{tmpDir}")
   logger.error(f"FATAL ERROR!  Closing Program!")
   exitProgram()
-if not os.access(logDir, os.W_OK):
+if not os.access(logDir, os.W_OK): # a non-fatal error if you can't write logs
   logger.warning(f"Unable to write to log file directory!")
   logger.warning(f"\t{logDir}")
   logger.warning(f"Program will still continue, but this should be attended to.")
@@ -477,9 +500,10 @@ logger.info(f'----------------------------------------') # added separator line 
 while True: # loop forever
 
   # determine if there is any usage allowance left before moving on to processing files
-  logger.info(f"Check API usage allowance.")
+  # logger.info(f"Check API usage allowance.")
   if wasQuotaExceeded:  # allowance is non-zero but too low to do documents
     wasQuotaExceeded = False # clear the flag set during a previous attempt at translating a document (i.e., quota not empty but too low to process documents)
+    logger.error("The quota for this billing period has been exceeded.")
     # calculate the time to wait
     sleepWithACountdown(numbOfSecsTillRenewal())
     continue # restart while loop
@@ -487,6 +511,7 @@ while True: # loop forever
     try:
       usage = translator.get_usage()
       if usage.any_limit_reached: # no more allowance this month, or too low too do documents.
+        logger.error("The quota for this billing period has been exceeded.")
         # calculate the time to wait
         sleepWithACountdown(numbOfSecsTillRenewal())
         continue # restart while loop
@@ -529,18 +554,19 @@ while True: # loop forever
           logger.info(f'Processing file: {os.path.join(inputDir, os.fsdecode(file))}') # note the usage on the un-cleaned file name for this log entry
 
           # check if you can actually do anything (exceeded the usage limit)
-          charAllowance = getUsage()
-          expectedCharCost = getCharCountOfPDF(os.path.join(inputDir, os.fsdecode(file))) # again un-clean filename since it hasn't been renamed yet
-          if charAllowance <= 0:  # no more allowance this month
-            logger.error(f'Skipping file due to zero usage allowance.')
-            logger.removeHandler(fileHandler) # close the log before moving on to the next file
-            continue # move to next file
-          elif charAllowance < expectedCharCost:
-            logger.error(f'Skipping file.  Remaining allowance too low for this file.')
-            logger.removeHandler(fileHandler) # close the log before moving on to the next file
-            continue # move to next file
+          # this is all useless as each document costs 50,000 characters
+          # charAllowance = getUsage()
+          # expectedCharCost = getCharCountOfPDF(os.path.join(inputDir, os.fsdecode(file))) # again un-clean filename since it hasn't been renamed yet
+          # if charAllowance <= 0:  # no more allowance this month
+            # logger.error(f'Skipping file due to zero usage allowance.')
+            # logger.removeHandler(fileHandler) # close the log before moving on to the next file
+            # continue # move to next file
+          # elif charAllowance < expectedCharCost:
+            # logger.error(f'Skipping file.  Remaining allowance too low for this file.')
+            # logger.removeHandler(fileHandler) # close the log before moving on to the next file
+            # continue # move to next file
 
-          # rename if we need the filename to be made safe/clean (if same name, exits subroutine early)
+          # rename if we need the filename to be made safe/clean (if same name, exits the subroutine early)
           renameToSafeFilename(inputDir, os.fsdecode(file), filename)
 
           # translate the document
@@ -570,7 +596,7 @@ while True: # loop forever
         logger.info(f'----------------------------------------') # added separator line to global log
         continue # move to next file
       else:
-        continue
+        continue # move to next file
   # Delay for X minutes until checking the directory again ... and again ... and again.
   if not wasQuotaExceeded: # skip the delay if we're just going to delay for a much longer period due to exceeding the usage allowance
     sleepWithACountdown(checkPeriodSec)
@@ -588,11 +614,11 @@ while True: # loop forever
 #    * Basic functionality
 #
 # v2.0 2023-03-17
-#    * added While loop
+#    * added main While loop
 #    * improved logging, error handling, and basic functioning.
 #
 # v2.1.0 2023-03-18
-#    * various edits made to make compatible with Docker and polish
+#    * various edits to make compatible with Docker and polish
 #
 # v2.1.1 2023-03-24
 #    * translateDocument(): added better parsing of the error message
@@ -600,5 +626,15 @@ while True: # loop forever
 #    * added numbOfSecsTillRenewal()
 #    * added ENV{AM_I_IN_A_DOCKER_CONTAINER} to set variables depending on the Docker state
 #
+# v2.1.2 2023-05-03
+#    * reportResults(): started to mess around with a nice summary report, but didn't get very far# * numbOfSecsTillRenewal():
+#    * getSafeFilename(): filter ¢ symbol that occurs when eboks puts things in zip files 
+#    * getSafeFilename(): convert whitespace to a single space 
+#    * line 446 / directory RW check: realized that due to safe filename renaming you did need to write to inputDir
+#    * removed usage checking mid-directory parsing.  Each document costs 50,000 characters regardless of size.
+#    * numbOfSecsTillRenewal():  Fixed a bug where the program waited over 30 days if the usage ran out in the same month but before the renewal date
+#    * numbOfSecsTillRenewal():  moved the default value into the function call.
+#    * sleepWithACountdown(): removed some logging to tighten up the log file
+#    * translateDocument(): added exception for deepl.exceptions.QuotaExceededException  & in the main while loop added logger feedback for usage.limit_reached
 
 

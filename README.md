@@ -28,6 +28,7 @@ Please sign up for an account on [the DeepL website](https://www.deepl.com/pro-a
 
 ## Getting your DeepL API/Authentication  Key
 
+- Signing up for an account is the first step: [the DeepL website](https://www.deepl.com/pro-api).
 - Simply go to [your account summary page on the DeepL website](https://www.deepl.com/account/summary).
 - Scroll down to the bottom of the page.  There is the key.
 - Copy this key into your Docker compose/command, as shown below.
@@ -67,9 +68,8 @@ I use compose.  Conversion of the below into the command line command is "left a
 			container_name: autotranslate
 			environment:
 				- DEEPL_AUTH_KEY=aaa11111-a1aa-1a11-a1a1-a1a1aa11aaa1:aa              # (mandatory) get your key at https://www.deepl.com/account/summary
-				# - DEEPL_SERVER_URL=http://localhost:3000                            # (optional) "" (i.e., an empty string) is the actual DeepL server, anything else is for testing 
-				# - DEEPL_USAGE_RENEWAL_DAY=1                                         # (optional) If you put the day of the month your DeepL allowance resets, then the expired usage sleeping will be more accurate.  Otherwise, it just waits 7 days before trying again.
 				# - DEEPL_TARGET_LANG=EN-US                                           # (near mandatory)  The language isn't really changeable on the fly.  Assumes you want all your files translated to a common language
+				# - DEEPL_USAGE_RENEWAL_DAY=1                                         # (optional) If you put the day of the month your DeepL allowance resets, then the expired usage sleeping will be more accurate.  Otherwise, it just waits 7 days before trying again.
 				# - CHECK_EVERY_X_MINUTES=15                                          # (optional) How often you want the inputDir scanned for new files
 				# - ORIGINAL_BEFORE_TRANSLATION=0                                     # (optional) When appending the original and translated files, which should go first?
 				# - TRANSLATE_FILENAME=1                                              # (optional) Should the filename also be translated?
@@ -90,9 +90,8 @@ The only **mandatory** variable is the DEEPL_AUTH_KEY.
 | Env Variable           | Default | Purpose             |
 | ---------------------- | ------- | ------- |
 | DEEPL_AUTH_KEY         | None    | The Authentication Key from DeepL that allows you to use their API server. |
-| DEEPL_SERVER_URL        | ""    | If you wish to use a fake DeepL server for testing, put in the URL here.  This it totally unnecessary for production use. |
-| DEEPL_USAGE_RENEWAL_DAY | 0    | Eventually, you are going to try to translate more documents than you have quota with DeepL.  At this point, the script will stop trying to translate and sleep until your quota is renewed (the start of your new month).  This variable tells the script what day of the month your quota will be renewed, and the program can wake-up and resume translating.  For example, if your DeepL subscription renews on the 5th of the month, put "5" in this variable.  If this variable is not set, the program will wake-up every 7 days and see if your quota has been renewed.  Acceptable values are 1-31.  Values outside that range are treated as if the variable was not set. |
 | DEEPL_TARGET_LANG       | EN-US    | The target language to translate the documents into.  The original language will be auto-detected by DeepL.  A list of language codes may be found in [the DeepL API documentation](https://www.deepl.com/docs-api/translate-text) under the `target_lang` parameter. |
+| DEEPL_USAGE_RENEWAL_DAY | 0    | Eventually, you are going to try to translate more documents than you have quota with DeepL.  At this point, the script will stop trying to translate and sleep until your quota is renewed (the start of **your** new month).  This variable tells the script what day of the month your quota will be renewed, and the program can wake-up and resume translating.  For example, if your DeepL subscription renews on the 5th of the month, put "5" in this variable.  If this variable is not set, the program will wake-up every 7 days and see if your quota has been renewed.  Acceptable values are 1-31.  Values outside that range are treated as if the variable was not set. |
 | CHECK_EVERY_X_MINUTES   | 15    | The frequency at which the input directory will be scanned for any new files. |
 | ORIGINAL_BEFORE_TRANSLATION | false    | (> v2.1.3) When appending the original and translated files, which should go first? |
 | TRANSLATE_FILENAME      | true    | (> v2.2.0) Should the filename also be translated?  This is a bit experimental. |
@@ -107,16 +106,21 @@ The only **mandatory** variable is the DEEPL_AUTH_KEY.
 
 #### Other random quirks you may be interested in
 
-- **Filename cleaning**: Many filenames in non-English languages will not upload well to the API server.  The script will make an attempt to clean-up the filename, removing any troublesome/Unicode characters, and replacing them with ASCII characters instead.  Whitespace is also replaced with underscores.  If the filename is not translated, the output filename will be this cleaned filename.
+- **Filename Cleaning**: Many filenames in non-English languages will not upload well to the API server.  The script will make an attempt to clean-up the filename, removing any troublesome/Unicode characters, and replacing them with ASCII characters instead.  Whitespace is also replaced with underscores.  If the filename is not translated, the output filename will be this cleaned filename.
 - **Filename Translation, the quota**:  In order to not use up the DeepL quota, I used a separate Python library to perform filename translation and language detection.  I could use the DeepL API but each document uses a fixed 50,000 characters and if I use non-document side of the API to translate 30 characters of a filename, you are down from 10 free documents a month to 9 (500,000 - 30 = 499,970, and 499,970/50,000 is 9.9, which is less that 10.  Meaning that 10th document will exceed the quota and DeepL won't translate it.).  This feature will work until the Python library breaks.  But the DeepL API document translation should still work.  You just won't get the nice new filename.
 - **Filename Translation, the translation**:  In order to not use up the DeepL quota, I used a separate Python library to perform filename translation and language detection.  The Python library that does the translation attempts to do it via the standard web page interface, and I wouldn't be surprised if this breaks someday.  Right now I try three web pages (Bing, Google, and DeepL non-API), in that order, until one of them works.   
 - **Filename Translation, language reporting**:  In order to not use up the DeepL quota, I used a separate Python library to perform filename translation and language detection.  The language detection reported by this Python library is not as good as the DeepL API, but is only used for reporting to the log files.  If it is wrong, don't freak out.  DeepL does its own detection on the whole document.  It is just that the Python library isn't very good for something as short as a filename.
-- **Mock DeepL Server**:  If you wish to test out the DeepL API, there is a fake/mock server at [DeepLcom/deepl-mock on GitHub](https://github.com/DeepLcom/deepl-mock).  It is very limited, but it lets you test your code (to an extent) without running through your actual DeepL quota.  That is what the ENV variable DEEPL_SERVER_URL is for.  A pre-built docker image may be found at [thibauddemay/deepl-mock](https://hub.docker.com/r/thibauddemay/deepl-mock).
+- **Mock DeepL Server**:  If you wish to test how your code functions with the DeepL API, there is a fake/mock server at [DeepLcom/deepl-mock on GitHub](https://github.com/DeepLcom/deepl-mock).  It is very limited, but it lets you test your code (to an extent) without running through your actual DeepL quota.  A pre-built docker image may be found at [thibauddemay/deepl-mock](https://hub.docker.com/r/thibauddemay/deepl-mock).  This was a useful feature in the pre- v2.0.0 version of the script, but it now deprecated.
+If you wish to use a mock DeepL server use the ENV variable DEEPL_SERVER_URL.  In the Docker compose you would include the following line (adjust "http://localhost:3000" to point to your deepl-mock container.)
+
+		environment:
+			- DEEPL_SERVER_URL=http://localhost:3000                            # (optional) "" (i.e., an empty string) is the actual DeepL server, anything else is for testing 
+
 
 
 ## Thoughts on use with Paperless
 
-My original idea for this was I was tired of feeding in documents one at a time to the Google Translation web site.
+My original idea for this was I was tired of feeding in documents one at a time to the Google Translation web site.  The Google API costs money; the DeepL API does not.
 
 At about the same time, I started to look into [Paperless](https://github.com/paperless-ngx/paperless-ngx), "a document management system that transforms your physical documents into a searchable online archive so you can keep, well, less paper."  
 
@@ -130,9 +134,9 @@ To turbo-charge this, make use of [Paperless's auto-tagging feature](https://doc
 
 For example, a directory named:
 
-	\paperless_data\consume\german
+	/paperless_data/consume/german
 
-would result in Paperless importing files (in `\consume\german`) tagged with "german".  This allows you to separate those from non-translated files in Paperless.
+would result in Paperless importing files (in `/consume/german`) tagged with "german".  This allows you to separate those from non-translated files in Paperless.
 
 
 AutoTranslate doesn't use separate output directories for each source language, but I am assuming you really only translate from one language (probably the foreign country you live in).  If you have multiple languages you could run multiple instances of the docker, each pointing to a different sub-directory.

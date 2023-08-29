@@ -9,7 +9,6 @@ WORKDIR /app
 # ENVs supported by this Image
 # ---------------------------------
 # ENV DEEPL_AUTH_KEY=
-# ENV DEEPL_SERVER_URL=
 # ENV DEEPL_TARGET_LANG=
 # ENV CHECK_EVERY_X_MINUTES=
 # ENV DEEPL_USAGE_RENEWAL_DAY=
@@ -27,15 +26,17 @@ COPY keep_alive.py keep_alive.py
 RUN pip3 install -r requirements.txt && \
     mkdir /inputDir /outputDir /logDir /tmpDir
 
+
 ENTRYPOINT "./autotranslate.py"
 
 # ---------------------------------
 # Remember these commands 
 # ---------------------------------
-# pipreqs --force # to create requirements.txt
+# pipreqs --force # to create requirements.txt ; cat requirements.txt
 #
 # docker login
-# docker buildx build --platform=amd64,arm64 --push -t zorbatherainy/autotranslate:2.1.1b .
+# docker buildx build --platform=amd64,arm64 --push -t zorbatherainy/autotranslate -t zorbatherainy/autotranslate:2.1.1b .
+# docker buildx build --platform=amd64,arm64 -t zorbatherainy/autotranslate  .
 #
 # docker build -t zorbatherainy/autotranslate .
 # docker image ls
