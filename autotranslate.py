@@ -1,11 +1,12 @@
 #!/usr/local/bin/python3
 # assumes Python >= 3.7.x
 import deepl                                     # pip3 install --upgrade deepl  # https://github.com/DeepLcom/deepl-python#configuration
-from pypdf import PdfMerger, PdfReader           # pip3 install pypdf
+from pypdf import PdfReader, PdfWriter           # pip3 install pypdf
 from unidecode import unidecode                  # pip3 install unidecode
 from dateutil.relativedelta import relativedelta # pip3 install python-dateutil
-from datetime import datetime,timedelta  # https://docs.python.org/3/library/datetime.html
-import logging, logging.handlers # https://docs.python.org/3/howto/logging.html
+# from googletrans import Translator               # pip3 install googletrans # https://pypi.org/project/googletrans/
+from datetime import datetime,timedelta          # https://docs.python.org/3/library/datetime.html
+import logging, logging.handlers                 # https://docs.python.org/3/howto/logging.html
 import os
 import string
 import sys
@@ -88,6 +89,18 @@ def translateDocument(inputDocument, outputDocument, targetLang):
    
   return retVal
 
+# def translateFilename(inputFilename):
+  # # translates the input filename
+  # try:
+    # translator = Translator()
+    # transText = translator.translate('안녕하세요.', dest='ja')
+    # logger.info(f"\t{transText}")
+  # except Exception as error:
+    # logger.error("Unknown error occurred during the filename translator.")
+    # logger.error(f"{error}")
+    
+  # return True
+
 def getUsage():
   # @return The number of characters left in your usage allowance.
   # originally copied from https://github.com/DeepLcom/deepl-python#translating-documents
@@ -120,20 +133,53 @@ def getUsage():
     logger.warning(f"\t{error}")
   return charsLeft # can still translate
 
-def appendPDFs(firstPDF, secondPDF, outputPDF):
-  # combine PDFs into a single PDF
-  logger.info('Appending the translated PDF to the end of the original PDF.')
-  pdfs = [firstPDF, secondPDF] # I could input a list as a function argument, but I only have 2 PDFs so I made the input args explicit
-  merger = PdfMerger()
+def removeBlankPDFPages(filenamePDF):
+  # identify and remove blank pages from a PDF
+  logger.info('Attempting to remove any blank pages form the translated document.')
+  reader = PdfReader(filenamePDF)
+  writer = PdfWriter()
   
   try:
-    for pdf in pdfs:
-      merger.append(pdf)
-    merger.write(outputPDF)
-    merger.close()
+    numPages = len(reader.pages)
+    for page_number in range(numPages):
+      page = reader.pages[page_number]
+      # Once you have your Page object, call its extractText() method to return a string of the page’s text ❸. The text extraction isn’t perfect. 
+      page_contents = page.get_contents()
+      if not (page_contents is None):
+        writer.add_page(page)
+        true_page_number = page_number+1
+        logger.info(f"\tPage {true_page_number} of {numPages} is not blank.")
+      else:
+        logger.info(f"\tPage {true_page_number} of {numPages} is blank.")
+    writer.write(filenamePDF)
+    logger.info('\tPDF cleaned successful.')
+    writer.close()
+    return True
+  except Exception as error:
+    writer.close()
+    logger.error("Unknown error occurred during the PDF blank page removal process.")
+    logger.error(f"{error}")
+    return False
+
+def appendPDFs(origPDF, translatedPDF, outputPDF):
+  # combine PDFs into a single PDF
+  removeBlankPDFPages(translatedPDF)
+  writer = PdfWriter()
+  
+  logger.info('Appending the translated PDF to the end of the original PDF.')
+  try:
+    if isPutOrigFirst:
+      writer.append(origPDF, "Original", None, True)
+      writer.append(translatedPDF, "Translation", None, True)
+    else:
+      writer.append(translatedPDF, "Translation", None, True)
+      writer.append(origPDF, "Original", None, True)
+    writer.write(outputPDF)
+    writer.close()
     logger.info('\tPDF merger successful.')
     return True
   except Exception as error:
+    writer.close()
     logger.error("Unknown error occurred during the PDF merging process.")
     logger.error(f"{error}")
     return False
@@ -142,7 +188,7 @@ def getSafeFilename(inputFilename):
   ## Make a file name that only contains safe characters  
   # @param inputFilename A filename containing illegal characters  
   # @return A filename containing only safe characters  
-
+  
   # Set here the valid chars (note the lack of <space> as a valid char)
   safechars = string.ascii_letters + string.digits + "-_."
   try:
@@ -152,7 +198,7 @@ def getSafeFilename(inputFilename):
       inputFilename = fileRoot  + fileExten
       
       # remove excessive spaces & convert whitespace to a single proper space
-      inputFilename = re.sub(r"\s.", " ", inputFilename)
+      inputFilename = re.sub(r"\s+", " ", inputFilename)
       
       # convert spaces to underscores
       inputFilename = inputFilename.replace(" ", "_")
@@ -214,7 +260,7 @@ def deleteFile(filename):
     logger.warning(f"\tFile did not exist in the first place. Nothing to do.")
     return True
   
-def getCharCountOfPDF(filename):
+def getCharCountOfPDF(filename): # not used anymore
   # attempts to estimate how many characters are in a PDF
   # does not work unless the PDF has been OCRed or otherwise includes text (e.g., printed from a Word document)
   saved_text = ""
@@ -265,8 +311,8 @@ def sleepWithACountdown(secs, isTop=True):
     
 
     # turn off the logger's automatic NewLine for this subroutine
-      # origTerminator_CH = consoleHandler.terminator
-      # consoleHandler.terminator = ""
+    origTerminator_CH = consoleHandler.terminator
+    consoleHandler.terminator = ""
     if not (globalFileHandler is None): # note the creation of the GFL may have failed
       origTerminator_GFL = globalFileHandler.terminator
       globalFileHandler.terminator = ""
@@ -315,7 +361,7 @@ def sleepWithACountdown(secs, isTop=True):
 
   if isTop:
     # turn on the logger's automatic NewLine
-    # consoleHandler.terminator = origTerminator_CH
+    consoleHandler.terminator = origTerminator_CH
     if not (globalFileHandler is None):
       globalFileHandler.terminator = origTerminator_GFL
 
@@ -356,6 +402,25 @@ def numbOfSecsTillRenewal(defaultPeriodToWait_Days=7):
     logger.debug(f"\twaitUntilNewUsage_Sec = {waitUntilNewUsage_Sec}")
   return waitUntilNewUsage_Sec
 
+def to_bool(value, defaultVal):
+  # Convert a value (of unknown type) to boolean.
+  if (type(value) is bool):
+    return value
+  elif type(value) == int or type(value) == float:
+    if value != 0: 
+      return True
+    else:
+      return False
+  elif (type(value) is str):
+    if value.lower() in ("yes", "y", "true",  "t", "1", "1.0"): 
+      return True
+    elif value.lower() in ("no",  "n", "false", "f", "0", "0.0", "", "none", "[]", "{}"): 
+      return False
+    else:
+      return defaultVal
+  else:
+    return defaultVal
+
 def reportResults():
   logger.info(f"Final output report")
   logger.info(f"\tFinal output report")
@@ -385,26 +450,34 @@ isInDocker      = bool(os.getenv("AM_I_IN_A_DOCKER_CONTAINER",0))            # (
   # export DEEPL_SERVER_URL="http://localhost:3000"
   # see mock DeepL server at https://github.com/DeepLcom/deepl-mock
   # and the pre-made Docker image at https://hub.docker.com/r/thibauddemay/deepl-mock
-auth_key        =     os.getenv("DEEPL_AUTH_KEY", "ThisIsABogusTestingKey")  # (mandatory) get your key at https://www.deepl.com/account/usage
-serverURL       =     os.getenv("DEEPL_SERVER_URL", "")                      # (optional) "" (i.e., an empty string) uses the actual DeepL server, anything else is for testing 
-targetLang      =     os.getenv("DEEPL_TARGET_LANG","EN-US")                 # (near mandatory)  The language isn't really changeable on the fly.  Assumes you want all your files translated to the same language
-usageRenewalDay = int(os.getenv("DEEPL_USAGE_RENEWAL_DAY",0))                # (optional) If you put the day of the month your DeepL allowance resets, then the expired usage sleeping will be more accurate.  
-checkPeriodMin  = int(os.getenv("CHECK_EVERY_X_MINUTES",15))                 # (optional) How often you want the inputDir scanned for new files
+auth_key           =     os.getenv("DEEPL_AUTH_KEY", "ThisIsABogusTestingKey")  # (mandatory) get your key at https://www.deepl.com/account/usage
+serverURL          =     os.getenv("DEEPL_SERVER_URL", "")                      # (optional) "" (i.e., an empty string) uses the actual DeepL server, anything else is for testing 
+targetLang         =     os.getenv("DEEPL_TARGET_LANG","EN-US")                 # (near mandatory)  The language isn't really changeable on the fly.  Assumes you want all your files translated to the same language
+usageRenewalDay    = int(os.getenv("DEEPL_USAGE_RENEWAL_DAY",0))                # (optional) If you put the day of the month your DeepL allowance resets, then the expired usage sleeping will be more accurate.  
+checkPeriodMin     = int(os.getenv("CHECK_EVERY_X_MINUTES",15))                 # (optional) How often you want the inputDir scanned for new files
+isPutOrigFirst     = to_bool(os.getenv("ORIGINAL_BEFORE_TRANSLATION","False"), False)    # (optional) Which file goes first in the final output, the translation or the original (default: original then translation)
+# isTransFilename    = to_bool(os.getenv("TRANSLATE_FILENAME","False"), False)    # (optional) Do you want the filename to be translated as well as the contents?
 if isInDocker:
   inputDir  = "/inputDir/"   # mapped via Docker
   outputDir = "/outputDir/"  # mapped via Docker
   logDir    = "/logDir/"     # mapped via Docker
   tmpDir    = "/tmpDir/"     # hidden from outside Docker
+  allowFileTranslation = True
+  allowFileDeletion = True
+  allowToExitWithoutLoop = False
 else:
   inputDir  = "/mnt/translation_scripts/inputDir/"   # un-translated docs go here
   outputDir = "/mnt/translation_scripts/outputDir/"  # merged & translated docs go here
   logDir    = "/mnt/translation_scripts/logDir/"     # log files go here
   tmpDir    = "/mnt/translation_scripts/tmpDir/"     # translated but un-merged docs go here (before merging)
+  allowFileTranslation = False
+  allowFileDeletion = False
+  allowToExitWithoutLoop = True
   # variables shown to outside world
-scriptVersion = "2.1.2"
+scriptVersion = "2.1.3"
   # internal variables
 wasQuotaExceeded = False
-checkPeriodSec = checkPeriodMin * 60
+checkPeriodSec = checkPeriodMin * 60 # note my inconsistency between "_Sec" and "Sec" (no underscore) when naming variables.  I know I should be better.
 
 
 # setup the global log file
@@ -426,6 +499,9 @@ except Exception as error:
   logger.warning(f"Unable to write to global log file!")
   logger.warning(f"\tGlobal Log file: {globalLogFile}")
   logger.warning(f"\t{error}")
+logger.info(f'----------------------------------------') # added separator line to global log
+logger.info(f'--- Starting new execution of script ---') 
+logger.info(f'----------------------------------------') # added separator line to global log
 
 # spit out some debug info
 if True:  # really just here for indentation and code folding purposes
@@ -435,16 +511,19 @@ if True:  # really just here for indentation and code folding purposes
   tmpVarC = os.environ.get("DEEPL_TARGET_LANG")
   tmpVarD = os.environ.get("CHECK_EVERY_X_MINUTES")
   tmpVarE = os.environ.get("DEEPL_USAGE_RENEWAL_DAY")
+  tmpVarF = os.getenv("ORIGINAL_BEFORE_TRANSLATION")
   # logger.debug(f"\tDEEPL_AUTH_KEY:          {tmpVarA}")
   # logger.debug(f"\tauth_key:                {auth_key}")
-  logger.debug(f"\tDEEPL_SERVER_URL:        {tmpVarB}")
-  logger.debug(f"\tserverURL:               {serverURL}")
-  logger.debug(f"\tDEEPL_TARGET_LANG:       {tmpVarC}")
-  logger.debug(f"\ttargetLang:              {targetLang}")
-  logger.debug(f"\tCHECK_EVERY_X_MINUTES:   {tmpVarD}")
-  logger.debug(f"\tcheckPeriodMin:          {checkPeriodMin}")
-  logger.debug(f"\tDEEPL_USAGE_RENEWAL_DAY: {tmpVarE}")
-  logger.debug(f"\tusageRenewalDay:         {usageRenewalDay}")
+  logger.debug(f"\tDEEPL_SERVER_URL:            {tmpVarB}")
+  logger.debug(f"\t    serverURL:               {serverURL}")
+  logger.debug(f"\tDEEPL_TARGET_LANG:           {tmpVarC}")
+  logger.debug(f"\t     targetLang:             {targetLang}")
+  logger.debug(f"\tCHECK_EVERY_X_MINUTES:       {tmpVarD}")
+  logger.debug(f"\t    checkPeriodMin:          {checkPeriodMin}")
+  logger.debug(f"\tDEEPL_USAGE_RENEWAL_DAY:     {tmpVarE}")
+  logger.debug(f"\t    usageRenewalDay:         {usageRenewalDay}")
+  logger.debug(f"\tORIGINAL_BEFORE_TRANSLATION: {tmpVarF}")
+  logger.debug(f"\t    isPutOrigFirst:          {isPutOrigFirst}")
   logger.debug(f"\tinputDir:       {inputDir}")
   logger.debug(f"\toutputDir:      {outputDir}")
   logger.debug(f"\tlogDir:         {logDir}")
@@ -521,6 +600,9 @@ while True: # loop forever
 
   # get every PDF file in inputDir; send it off for translation; output the result in outputDir
   for file in os.listdir(os.fsencode(inputDir)):
+      if wasQuotaExceeded:  # immediate exit out if the quota is exceeded
+        break
+
       filename = os.fsdecode(file)
       if filename.lower().endswith(".pdf"): 
 
@@ -553,24 +635,11 @@ while True: # loop forever
           # report start of processing
           logger.info(f'Processing file: {os.path.join(inputDir, os.fsdecode(file))}') # note the usage on the un-cleaned file name for this log entry
 
-          # check if you can actually do anything (exceeded the usage limit)
-          # this is all useless as each document costs 50,000 characters
-          # charAllowance = getUsage()
-          # expectedCharCost = getCharCountOfPDF(os.path.join(inputDir, os.fsdecode(file))) # again un-clean filename since it hasn't been renamed yet
-          # if charAllowance <= 0:  # no more allowance this month
-            # logger.error(f'Skipping file due to zero usage allowance.')
-            # logger.removeHandler(fileHandler) # close the log before moving on to the next file
-            # continue # move to next file
-          # elif charAllowance < expectedCharCost:
-            # logger.error(f'Skipping file.  Remaining allowance too low for this file.')
-            # logger.removeHandler(fileHandler) # close the log before moving on to the next file
-            # continue # move to next file
-
           # rename if we need the filename to be made safe/clean (if same name, exits the subroutine early)
           renameToSafeFilename(inputDir, os.fsdecode(file), filename)
 
           # translate the document
-          if os.path.exists(inputFile):
+          if (os.path.exists(inputFile) and allowFileTranslation):
             translateDocument(inputFile, tmpFile, targetLang)
           
           # append the translated PDF to the original PDF and put in outputDir
@@ -578,13 +647,13 @@ while True: # loop forever
             appendPDFs(inputFile, tmpFile, outputFile)
 
           # clean up the old files, make sure that inputFiles aren't re-translated at another date
-          if os.path.exists(outputFile): # if we successfully created the outputFile
+          if (os.path.exists(outputFile) and allowFileDeletion): # if we successfully created the outputFile
             deleteFile(tmpFile)
             deleteFile(inputFile)
 
           logger.info(f'Finished processing file.')
           time.sleep(30) # Delay for X seconds to prevent pounding on the server.
-          # getUsage() # annoyingly DeepL doesn't update their usage quickly.  So, this line may get removed as worthless.
+          # getUsage() # annoyingly DeepL doesn't update their usage quickly.  So, this line got  removed as worthless.
           try:
             if not (fileHandler is None):
               logger.removeHandler(fileHandler) # close the log before moving on to the next file
@@ -592,6 +661,9 @@ while True: # loop forever
             logger.debug(f"Unable to close individual log file.  (Probably never opened in the 1st place.)")
             logger.debug(f"\tIndividual Log file: {logFile}")
             logger.debug(f"\t{error}")
+            
+          if allowToExitWithoutLoop:
+            exitProgram("Exiting program due to allowToExitWithoutLoop variable being set to True.")
 
         logger.info(f'----------------------------------------') # added separator line to global log
         continue # move to next file
@@ -606,6 +678,8 @@ while True: # loop forever
 # #####################################
 # * support all DeepL file-types
 #   * not sure what do with files that can't be appended
+# * auto-rotate PDF files (maybe better as a separate script, so it can handle non-translated PDFs too)
+
       
 # #####################################
 # Version history
@@ -636,5 +710,21 @@ while True: # loop forever
 #    * numbOfSecsTillRenewal():  moved the default value into the function call.
 #    * sleepWithACountdown(): removed some logging to tighten up the log file
 #    * translateDocument(): added exception for deepl.exceptions.QuotaExceededException  & in the main while loop added logger feedback for usage.limit_reached
+#
+# v2.1.3 2023-08-21
+#    * more tweaks of the log reporting
+#    * for file in os.listdir(os.fsencode(inputDir)):  added if wasQuotaExceeded: check to skip over any files after the quota is exceeded.  I used to think the quota usage was based on char count not a fixed 50k per file.  So, originally I let the smaller files keep trying.
+#    * getSafeFilename(): fixed a typo in the RegEx
+#    * to_bool(): Added this to clean up str->bool conversions
+#    * removeBlankPDFPages():  Added to remove blank pages on the translation before appending
+#    * appendPDFs(): now supports putting either the translated or original file first
+#    * appendPDFs(): switched from PdfMerge to PdfWriter
+#    * allow(*) variables created to turn off various features when running outside of Docker
+
+
+#
+# v2.1.4 2023-05-05
+#    * 
+#    * 
 
 
