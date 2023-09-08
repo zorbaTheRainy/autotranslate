@@ -4,14 +4,15 @@ import deepl                                     # pip3 install --upgrade deepl 
 from pypdf import PdfReader, PdfWriter           # pip3 install pypdf
 from unidecode import unidecode                  # pip3 install unidecode
 from dateutil.relativedelta import relativedelta # pip3 install python-dateutil
-# from googletrans import Translator               # pip3 install googletrans # https://pypi.org/project/googletrans/
+import translators as ts                         # pip3 install --upgrade translators  # https://github.com/UlionTse/translators (this is a real PITA to install, you need to install Node.js in apt-get and then pip needs to recompile the cryptography package)
+import langdetect                                # pip3 install langdetect  # https://pypi.org/project/langdetect/
 from datetime import datetime,timedelta          # https://docs.python.org/3/library/datetime.html
 import logging, logging.handlers                 # https://docs.python.org/3/howto/logging.html
 import os
+import re                                        # https://docs.python.org/3/library/re.html?highlight=re#module-re
 import string
 import sys
 import time
-import re
 
 
 
@@ -89,19 +90,50 @@ def translateDocument(inputDocument, outputDocument, targetLang):
    
   return retVal
 
-# def translateFilename(inputFilename):
-  # # translates the input filename
-  # try:
-    # translator = Translator()
-    # transText = translator.translate('안녕하세요.', dest='ja')
-    # logger.info(f"\t{transText}")
-  # except Exception as error:
-    # logger.error("Unknown error occurred during the filename translator.")
-    # logger.error(f"{error}")
+def getTranslatedFilename(filename):
+  # translates the input filename
+  
+  # this is a bit (really) fragile.  It uses 2 APIs to do the translation (translators & langdetect) instead of using the DeepL translation engine and the quota thereof.
+  # langdetect is pretty stable as it is all offline, but I am only using it to make a print() statement pretty
+  logger.info("Translating input filename to target language.")
+  transText = filename
+  
+  
+  # translators don't handle underscores well
+  didFilenameHaveUnderscores = False
+  filename_new = filename.replace("_", " ")
+  if filename_new != filename:
+    didFilenameHaveUnderscores = True
+  
+  try:
+    origLang = langdetect.detect(filename_new)
+  except Exception as error:
+    origLang = "??"
+  logger.info(f"\t{origLang.upper()} -> {filename}")
     
-  # return True
+  try: # multiple failure levels of translators []
+    selectedTranslator = 'google' # Google is better but I don't trust them to not screw with their webpage and break the translators API
+    transText = ts.translate_text(filename_new, translator=selectedTranslator, to_language=targetLangShort)
+  except Exception as error:
+    try:
+      selectedTranslator = 'bing' # Bing is the translators API default tool
+      transText = ts.translate_text(filename_new, translator=selectedTranslator, to_language=targetLangShort)
+    except Exception as error:
+      try:
+        selectedTranslator = 'deepl' # DeepL is what the rest of the program uses but the free version tends to error on a captcha
+        transText = ts.translate_text(filename_new, translator=selectedTranslator, to_language=targetLangShort)
+      except Exception as error:
+        logger.error("\tUnknown error occurred during the filename translator.")
+        logger.error(f"\t{error}")
+  # logger.error(f"\t{selectedTranslator}")
 
-def getUsage():
+  if didFilenameHaveUnderscores: # undo the replacement of underscores/spaces
+    transText = transText.replace(" ", "_")
+  
+  logger.info(f"\t{targetLangShort.upper()} -> {transText}")
+  return transText
+
+def getUsage():  # not used anymore
   # @return The number of characters left in your usage allowance.
   # originally copied from https://github.com/DeepLcom/deepl-python#translating-documents
   charsLeft = 0
@@ -221,6 +253,7 @@ def getSafeFilename(inputFilename):
 def renameToSafeFilename(directory, oldFilename, newFilename):
   # newFilename = getSafeFilename(oldFilename)
   if oldFilename == newFilename:
+    logger.info(f'Renaming file unnecessary.')
     return oldFilename # exit early if the same filenames are used
 
   # make full path names
@@ -456,7 +489,7 @@ targetLang         =     os.getenv("DEEPL_TARGET_LANG","EN-US")                 
 usageRenewalDay    = int(os.getenv("DEEPL_USAGE_RENEWAL_DAY",0))                # (optional) If you put the day of the month your DeepL allowance resets, then the expired usage sleeping will be more accurate.  
 checkPeriodMin     = int(os.getenv("CHECK_EVERY_X_MINUTES",15))                 # (optional) How often you want the inputDir scanned for new files
 isPutOrigFirst     = to_bool(os.getenv("ORIGINAL_BEFORE_TRANSLATION","False"), False)    # (optional) Which file goes first in the final output, the translation or the original (default: original then translation)
-# isTransFilename    = to_bool(os.getenv("TRANSLATE_FILENAME","False"), False)    # (optional) Do you want the filename to be translated as well as the contents?
+isTransFilename    = to_bool(os.getenv("TRANSLATE_FILENAME","False"), True)    # (optional) Do you want the filename to be translated as well as the contents?
 if isInDocker:
   inputDir  = "/inputDir/"   # mapped via Docker
   outputDir = "/outputDir/"  # mapped via Docker
@@ -474,7 +507,7 @@ else:
   allowFileDeletion = False
   allowToExitWithoutLoop = True
   # variables shown to outside world
-scriptVersion = "2.1.3"
+scriptVersion = "2.2.0"
   # internal variables
 wasQuotaExceeded = False
 checkPeriodSec = checkPeriodMin * 60 # note my inconsistency between "_Sec" and "Sec" (no underscore) when naming variables.  I know I should be better.
@@ -512,18 +545,23 @@ if True:  # really just here for indentation and code folding purposes
   tmpVarD = os.environ.get("CHECK_EVERY_X_MINUTES")
   tmpVarE = os.environ.get("DEEPL_USAGE_RENEWAL_DAY")
   tmpVarF = os.getenv("ORIGINAL_BEFORE_TRANSLATION")
+  tmpVarG = os.getenv("TRANSLATE_FILENAME")
+  targetLangShort = targetLang[0:2].lower()
   # logger.debug(f"\tDEEPL_AUTH_KEY:          {tmpVarA}")
   # logger.debug(f"\tauth_key:                {auth_key}")
   logger.debug(f"\tDEEPL_SERVER_URL:            {tmpVarB}")
   logger.debug(f"\t    serverURL:               {serverURL}")
   logger.debug(f"\tDEEPL_TARGET_LANG:           {tmpVarC}")
-  logger.debug(f"\t     targetLang:             {targetLang}")
+  logger.debug(f"\t    targetLang:              {targetLang}")
+  logger.debug(f"\t    targetLangShort:         {targetLangShort}")
   logger.debug(f"\tCHECK_EVERY_X_MINUTES:       {tmpVarD}")
   logger.debug(f"\t    checkPeriodMin:          {checkPeriodMin}")
   logger.debug(f"\tDEEPL_USAGE_RENEWAL_DAY:     {tmpVarE}")
   logger.debug(f"\t    usageRenewalDay:         {usageRenewalDay}")
   logger.debug(f"\tORIGINAL_BEFORE_TRANSLATION: {tmpVarF}")
   logger.debug(f"\t    isPutOrigFirst:          {isPutOrigFirst}")
+  logger.debug(f"\tTRANSLATE_FILENAME:           {tmpVarG}")
+  logger.debug(f"\t    isTransFilename:         {isPutOrigFirst}")
   logger.debug(f"\tinputDir:       {inputDir}")
   logger.debug(f"\toutputDir:      {outputDir}")
   logger.debug(f"\tlogDir:         {logDir}")
@@ -604,6 +642,7 @@ while True: # loop forever
         break
 
       filename = os.fsdecode(file)
+      filename_orig = filename
       if filename.lower().endswith(".pdf"): 
 
         # clean the filename to avoid any un-safe chars that would prevent us from uploading the file to the web API
@@ -619,6 +658,9 @@ while True: # loop forever
           outputFile = os.path.join(outputDir, filename)
           tmpFile    = os.path.join(tmpDir, filename)
           logFile    = os.path.join(logDir,os.path.splitext(filename)[0] + '.log')
+          if isTransFilename:  # rename if we are using the translated filename instead of the safe one
+            outputFile = os.path.join(outputDir, getTranslatedFilename(filename_orig))
+          
 
           # setup the individual (non-global) log file
           try:
@@ -633,10 +675,10 @@ while True: # loop forever
             logger.warning(f"\t{error}")
 
           # report start of processing
-          logger.info(f'Processing file: {os.path.join(inputDir, os.fsdecode(file))}') # note the usage on the un-cleaned file name for this log entry
+          logger.info(f'Processing file: {os.path.join(inputDir, filename_orig)}') # note the usage on the un-cleaned file name for this log entry
 
           # rename if we need the filename to be made safe/clean (if same name, exits the subroutine early)
-          renameToSafeFilename(inputDir, os.fsdecode(file), filename)
+          renameToSafeFilename(inputDir, filename_orig, filename)
 
           # translate the document
           if (os.path.exists(inputFile) and allowFileTranslation):
@@ -645,6 +687,8 @@ while True: # loop forever
           # append the translated PDF to the original PDF and put in outputDir
           if os.path.exists(tmpFile):
             appendPDFs(inputFile, tmpFile, outputFile)
+          else:
+            logger.warning(f"Temporary file does not exist: {tmpFile}")
 
           # clean up the old files, make sure that inputFiles aren't re-translated at another date
           if (os.path.exists(outputFile) and allowFileDeletion): # if we successfully created the outputFile
@@ -652,7 +696,7 @@ while True: # loop forever
             deleteFile(inputFile)
 
           logger.info(f'Finished processing file.')
-          time.sleep(30) # Delay for X seconds to prevent pounding on the server.
+          time.sleep(10) # Delay for X seconds to prevent pounding on the server & settling of the files.
           # getUsage() # annoyingly DeepL doesn't update their usage quickly.  So, this line got  removed as worthless.
           try:
             if not (fileHandler is None):
@@ -664,6 +708,8 @@ while True: # loop forever
             
           if allowToExitWithoutLoop:
             exitProgram("Exiting program due to allowToExitWithoutLoop variable being set to True.")
+          else:
+            time.sleep(20) # Delay for X seconds to prevent pounding on the server.
 
         logger.info(f'----------------------------------------') # added separator line to global log
         continue # move to next file
@@ -720,11 +766,17 @@ while True: # loop forever
 #    * appendPDFs(): now supports putting either the translated or original file first
 #    * appendPDFs(): switched from PdfMerge to PdfWriter
 #    * allow(*) variables created to turn off various features when running outside of Docker
-
-
 #
-# v2.1.4 2023-05-05
-#    * 
-#    * 
+# v2.2.0 2023-08-25
+#    * updated to now translate the filename
+#    * updated the DockerFile to (a) install Node.js, and (b) include the dev libraries to compile the cryptography package
+#    * now imports translators (which causes the changes to the DockerFile) to do web page based translation on small text
+#    * now imports langdetect to do a passable job of language detection for a nice output for the log
+#    * getTranslatedFilename(): added.  Goes to a web page and translates the filename.  It does not expend DeepL quota, which makes it more breakable if the web site changes.
+#    * renameToSafeFilename(): updated to print out a line if a rename wasn't needed.
+#    * TRANSLATE_FILENAME:  added as ENV variable
+#    * filename_orig: lines 645, 661, 678, 681 preserves the original filename and replaces multiple calls to os.fsdecode(file)
+#    * tweaked the sleep() command to speed up non-Docker testing
+
 
 

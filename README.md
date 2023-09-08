@@ -110,7 +110,7 @@ The only **mandatory** variable is the DEEPL_AUTH_KEY.
 - **Filename Translation, the quota**:  In order to not use up the DeepL quota, I used a separate Python library to perform filename translation and language detection.  I could use the DeepL API but each document uses a fixed 50,000 characters and if I use non-document side of the API to translate 30 characters of a filename, you are down from 10 free documents a month to 9 (500,000 - 30 = 499,970, and 499,970/50,000 is 9.9, which is less that 10.  Meaning that 10th document will exceed the quota and DeepL won't translate it.).  This feature will work until the Python library breaks.  But the DeepL API document translation should still work.  You just won't get the nice new filename.
 - **Filename Translation, the translation**:  In order to not use up the DeepL quota, I used a separate Python library to perform filename translation and language detection.  The Python library that does the translation attempts to do it via the standard web page interface, and I wouldn't be surprised if this breaks someday.  Right now I try three web pages (Bing, Google, and DeepL non-API), in that order, until one of them works.   
 - **Filename Translation, language reporting**:  In order to not use up the DeepL quota, I used a separate Python library to perform filename translation and language detection.  The language detection reported by this Python library is not as good as the DeepL API, but is only used for reporting to the log files.  If it is wrong, don't freak out.  DeepL does its own detection on the whole document.  It is just that the Python library isn't very good for something as short as a filename.
-- **Mock DeepL Server**:  If you wish to test how your code functions with the DeepL API, there is a fake/mock server at [DeepLcom/deepl-mock on GitHub](https://github.com/DeepLcom/deepl-mock).  It is very limited, but it lets you test your code (to an extent) without running through your actual DeepL quota.  A pre-built docker image may be found at [thibauddemay/deepl-mock](https://hub.docker.com/r/thibauddemay/deepl-mock).  This was a useful feature in the pre- v2.0.0 version of the script, but it now deprecated.
+- **Mock DeepL Server**:  If you wish to test how your code functions with the DeepL API, there is a fake/mock server at [DeepLcom/deepl-mock on GitHub](https://github.com/DeepLcom/deepl-mock).  It is very limited, but it lets you test your code (to an extent) without running through your actual DeepL quota.  A pre-built docker image may be found at [thibauddemay/deepl-mock](https://hub.docker.com/r/thibauddemay/deepl-mock).  This was a useful feature in the pre- v2.0.0 version of the script, but it is now deprecated.
 If you wish to use a mock DeepL server use the ENV variable DEEPL_SERVER_URL.  In the Docker compose you would include the following line (adjust "http://localhost:3000" to point to your deepl-mock container.)
 
 		environment:
@@ -120,7 +120,7 @@ If you wish to use a mock DeepL server use the ENV variable DEEPL_SERVER_URL.  I
 
 ## Thoughts on use with Paperless
 
-My original idea for this was I was tired of feeding in documents one at a time to the Google Translation web site.  The Google API costs money; the DeepL API does not.
+My original idea for this project was I was tired of feeding in documents one at a time to the Google Translation web site.  The Google API costs money; the DeepL API does not.  I decided to use the DeepL API.
 
 At about the same time, I started to look into [Paperless](https://github.com/paperless-ngx/paperless-ngx), "a document management system that transforms your physical documents into a searchable online archive so you can keep, well, less paper."  
 
@@ -156,7 +156,19 @@ The reason I don't recommend this is because it would run all files imported/con
 
 
 
-### License
+## Is it Abandoned?
+
+If this project has not been updated in awhile everyone asks, "Is it abandoned?"
+
+No, probably not.
+
+It is probably just **done**.  
+
+When I get this to a state where it doesn't need improvement, I won't improve it.  I am not making improvements just to show "progress".  I use this too much to just ignore it.  If it works and I am happy, I won't change it.  If it breaks and I need it, I'll fix it.
+
+But if it works well enough, I'll do something else (the urge to tinker aside).
+
+## License
 
 [MIT](LICENSE)
 
