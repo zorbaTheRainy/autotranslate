@@ -48,6 +48,7 @@ def translateDocument(inputDocument, outputDocument, targetLang):
             # target_lang=targetLang,
             # formality="prefer_more"
         # )
+    # this is a git test. ignore it
 
     logger.info(f'Translation complete!')
     retVal = True
@@ -61,7 +62,7 @@ def translateDocument(inputDocument, outputDocument, targetLang):
     # logger.error(f"{error}")
     # get various pieces of data from the error
     errorType = type(error)                     # here it'll only return DocumentTranslationException, but originally it was in the just Exception section
-    docHNDL = str(error.document_handle)        # pull out the document ID & Key, in case the user needs to use them outside this script.
+    docHNDL = str(error.document_handle)        # pull out the document ID & Key, in case the user needs to use them outside this script. 
     tmpStr = ', document handle: ' + docHNDL
     errMsg = str(error).replace(tmpStr, '.')    # DocumentTranslationException doesn't have a `message` attribute, so we'll make one
     logger.error(f"\t{errMsg}")
