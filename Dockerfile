@@ -1,7 +1,7 @@
 ARG PYTHON_VERSION=3.7
 ARG BUILD_TIME
 
-FROM python::${PYTHON_VERSION}-alpine
+FROM python:${PYTHON_VERSION}-alpine
 
 WORKDIR /app
 

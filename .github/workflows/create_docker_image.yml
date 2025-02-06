@@ -17,7 +17,7 @@ on:
             autotranslate_version:
                 description: 'Version number of AutoTranslate script'
                 required: true
-                default: '2.2.0b'
+                default: '2.2.0d'
                     
 jobs:
     build:
