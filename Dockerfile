@@ -1,8 +1,8 @@
 ARG PYTHON_VERSION=3.7
 ARG BUILD_TIME
 
-# FROM python:${PYTHON_VERSION}-alpine
-FROM python:${PYTHON_VERSION}
+FROM python:${PYTHON_VERSION}-alpine
+# FROM python:${PYTHON_VERSION}
 
 WORKDIR /app
 
@@ -28,14 +28,14 @@ COPY keep_alive.py keep_alive.py
 # 3. uninstall all the development tools, as they are no longer needed and take up a lot of space
 # 4. make the needed directories 
 
-# RUN apk add --no-cache gcc musl-dev python3-dev libffi-dev libressl-dev  nodejs npm && \
-#     pip3 install -r requirements.txt && \
-#     apk del gcc musl-dev python3-dev libffi-dev libressl-dev && \
-#     mkdir /inputDir /outputDir /logDir /tmpDir
-
-RUN apt update && \
+RUN apk add --no-cache gcc musl-dev python3-dev libffi-dev libressl-dev  nodejs npm && \
     pip3 install -r requirements.txt && \
+    apk del gcc musl-dev python3-dev libffi-dev libressl-dev && \
     mkdir /inputDir /outputDir /logDir /tmpDir
+
+# RUN apt update && \
+#     pip3 install -r requirements.txt && \
+#     mkdir /inputDir /outputDir /logDir /tmpDir
 
 
 
