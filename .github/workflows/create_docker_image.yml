@@ -23,15 +23,18 @@ jobs:
     build:
         runs-on: ubuntu-latest
         steps:
-        - name: Checkout
-          uses: actions/checkout@v4
-    
+        - name: Setup DockerHub Repo Name
+          id: repo_name
+          run: |
+            echo "DH_USER=${{ secrets.DOCKERHUB_USERNAME }}" >> $GITHUB_OUTPUT
+            echo "DH_REPO=autotranlate" >> $GITHUB_OUTPUT
+
         - name: Run date command
           id: date
           run: |
             buildTime=$(date +%Y-%m-%d" "%X)
             echo "BUILD_TIME=$buildTime" >> $GITHUB_OUTPUT
-    
+
         - name: Set GH_TAG
           id: tag
           run: |
@@ -46,13 +49,16 @@ jobs:
               echo "Invalid purpose type specified" >&2
               exit 1
             fi
-    
+
         - name: Login to DockerHub
           uses: docker/login-action@v3 
           with:
             username: ${{ secrets.DOCKERHUB_USERNAME }}
             password: ${{ secrets.DOCKERHUB_TOKEN }}
     
+        - name: Checkout
+          uses: actions/checkout@v4
+        
         - name: Set up QEMU
           uses: docker/setup-qemu-action@v3
     
@@ -69,8 +75,7 @@ jobs:
             # platforms: linux/amd64,linux/arm64
             # platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6
             tags: |
-              ${{ secrets.DOCKERHUB_USERNAME }}/dnsmasq:${{ steps.tag.outputs.GH_BUILD_TAG }}
-              ${{ secrets.DOCKERHUB_USERNAME }}/dnsmasq:${{ steps.tag.outputs.GH_LATEST_TAG }}
+              ${{ steps.repo_name.outputs.DH_USER }}/${{ steps.repo_name.outputs.DH_REPO }}:${{ steps.tag.outputs.GH_BUILD_TAG }}
             build-args: |
               BUILD_TIME=${{ steps.date.outputs.BUILD_TIME }}
               SCRIPT_VERSION=${{ github.event.inputs.autotranslate_version }}
