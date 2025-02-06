@@ -10,10 +10,10 @@ on:
                 options:
                     - testing
                     - production
-            perl_version:
-                description: 'Version of Perl to build from (will always be alpine)'
+            python_version:
+                description: 'Version of Python to build from (will always be alpine)'
                 required: true
-                default: '2.8.4'
+                default: '3.7'
             autotranslate_version:
                 description: 'Version number of AutoTranslate script'
                 required: true
@@ -79,4 +79,4 @@ jobs:
             build-args: |
               BUILD_TIME=${{ steps.date.outputs.BUILD_TIME }}
               SCRIPT_VERSION=${{ github.event.inputs.autotranslate_version }}
-              PERL_VERSION=${{ github.event.inputs.perl_version }}
+              PYTHON_VERSION=${{ github.event.inputs.python_version }}

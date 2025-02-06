@@ -1,7 +1,7 @@
-# syntax=docker/dockerfile:1
+ARG PYTHON_VERSION=3.7
+ARG BUILD_TIME
 
-# FROM python:3.7
-FROM python:3.7-alpine
+FROM python::${PYTHON_VERSION}-alpine
 
 WORKDIR /app
 
