@@ -13,7 +13,7 @@ on:
             python_version:
                 description: 'Version of Python to build from (will always be alpine)'
                 required: true
-                default: '3.7'
+                default: '3.13'
             autotranslate_version:
                 description: 'Version number of AutoTranslate script'
                 required: true
@@ -71,11 +71,12 @@ jobs:
           with:
             context: .
             push: true
-            platforms: linux/amd64
-            # platforms: linux/amd64,linux/arm64
+            # platforms: linux/amd64
+            platforms: linux/amd64,linux/arm64
             # platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6
             tags: |
               ${{ secrets.DOCKERHUB_USERNAME }}/${{ steps.repo_name.outputs.DH_REPO }}:${{ steps.tag.outputs.GH_BUILD_TAG }}
+              ${{ secrets.DOCKERHUB_USERNAME }}/${{ steps.repo_name.outputs.DH_REPO }}:${{ steps.tag.outputs.GH_LATEST_TAG }}
             build-args: |
               BUILD_TIME=${{ steps.date.outputs.BUILD_TIME }}
               SCRIPT_VERSION=${{ github.event.inputs.autotranslate_version }}
