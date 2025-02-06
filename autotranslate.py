@@ -14,6 +14,8 @@ import re                                        # https://docs.python.org/3/lib
 import string
 import sys
 import time
+# pip freeze > requirements.txt
+
 
 
 
