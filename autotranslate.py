@@ -511,7 +511,7 @@ else:
   allowFileDeletion = False
   allowToExitWithoutLoop = True
   # variables shown to outside world
-scriptVersion = "2.2.0"
+scriptVersion = "2.2.0d"
   # internal variables
 wasQuotaExceeded = False
 checkPeriodSec = checkPeriodMin * 60 # note my inconsistency between "_Sec" and "Sec" (no underscore) when naming variables.  I know I should be better.
@@ -781,6 +781,9 @@ while True: # loop forever
 #    * TRANSLATE_FILENAME:  added as ENV variable
 #    * filename_orig: lines 645, 661, 678, 681 preserves the original filename and replaces multiple calls to os.fsdecode(file)
 #    * tweaked the sleep() command to speed up non-Docker testing
+#
+# v2.2.0d 2025-02-06
+#    * updated requirements.txt to include latest translators
 
 
 
