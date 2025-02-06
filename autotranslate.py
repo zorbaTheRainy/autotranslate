@@ -69,7 +69,7 @@ def translateDocument(inputDocument, outputDocument, targetLang):
     tmpStr = ', document handle: ' + docHNDL
     errMsg = str(error).replace(tmpStr, '.')    # DocumentTranslationException doesn't have a `message` attribute, so we'll make one
     logger.error(f"\t{errMsg}")
-    p = re.compile('Document ID:\s+(\w+), key:\s+(\w+)')  # finish pulling the ID and key
+    p = re.compile(r'Document ID:\s+(\w+), key:\s+(\w+)')  # finish pulling the ID and key
     m = p.match(docHNDL)
     docID = m[1]
     docKey = m[2]
