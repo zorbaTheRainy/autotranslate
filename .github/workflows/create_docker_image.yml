@@ -27,7 +27,7 @@ jobs:
           id: repo_name
           run: |
             echo "DH_USER=${{ secrets.DOCKERHUB_USERNAME }}" >> $GITHUB_OUTPUT
-            echo "DH_REPO=autotranlate" >> $GITHUB_OUTPUT
+            echo "DH_REPO=autotranslate" >> $GITHUB_OUTPUT
 
         - name: Run date command
           id: date
