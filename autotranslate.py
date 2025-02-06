@@ -1,4 +1,5 @@
-#!/usr/local/bin/python3
+#!/usr/bin/env python3
+
 # assumes Python >= 3.7.x
 import deepl                                     # pip3 install --upgrade deepl  # https://github.com/DeepLcom/deepl-python#configuration
 from pypdf import PdfReader, PdfWriter           # pip3 install pypdf
@@ -48,7 +49,7 @@ def translateDocument(inputDocument, outputDocument, targetLang):
             # target_lang=targetLang,
             # formality="prefer_more"
         # )
-    # this is a git test. ignore it
+
 
     logger.info(f'Translation complete!')
     retVal = True
@@ -500,10 +501,10 @@ if isInDocker:
   allowFileDeletion = True
   allowToExitWithoutLoop = False
 else:
-  inputDir  = "/mnt/translation_scripts/inputDir/"   # un-translated docs go here
-  outputDir = "/mnt/translation_scripts/outputDir/"  # merged & translated docs go here
-  logDir    = "/mnt/translation_scripts/logDir/"     # log files go here
-  tmpDir    = "/mnt/translation_scripts/tmpDir/"     # translated but un-merged docs go here (before merging)
+  inputDir  = "./_test_dirs/inputDir/"   # un-translated docs go here
+  outputDir = "./_test_dirs/outputDir/"  # merged & translated docs go here
+  logDir    = "./_test_dirs/logDir/"     # log files go here
+  tmpDir    = "./_test_dirs/tmpDir/"     # translated but un-merged docs go here (before merging)
   allowFileTranslation = False
   allowFileDeletion = False
   allowToExitWithoutLoop = True
