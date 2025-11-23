@@ -1,789 +1,1431 @@
 #!/usr/bin/env python3
 
-# assumes Python >= 3.7.x
-import deepl                                     # pip3 install --upgrade deepl  # https://github.com/DeepLcom/deepl-python#configuration
-from pypdf import PdfReader, PdfWriter           # pip3 install pypdf
-from unidecode import unidecode                  # pip3 install unidecode
-from dateutil.relativedelta import relativedelta # pip3 install python-dateutil
-import translators as ts                         # pip3 install --upgrade translators  # https://github.com/UlionTse/translators (this is a real PITA to install, you need to install Node.js in apt-get and then pip needs to recompile the cryptography package)
-import langdetect                                # pip3 install langdetect  # https://pypi.org/project/langdetect/
-from datetime import datetime,timedelta          # https://docs.python.org/3/library/datetime.html
-import logging, logging.handlers                 # https://docs.python.org/3/howto/logging.html
-import os
-import re                                        # https://docs.python.org/3/library/re.html?highlight=re#module-re
-import string
-import sys
-import time
-# pip freeze > requirements.txt
+"""
+autotranslate.py
+===========
+
+Automated PDF translation workflow using DeepL and GoogleTranslator (for filename).
+
+This script monitors input directories for PDF files, translates them via
+DeepL's API (with optional filename translation using GoogleTranslator),
+and writes results to output directories. It supports both single-file
+and continuous directory-watch modes, with configurable logging,
+container-aware defaults, and optional notifications via Apprise.
+
+Features:
+- Config dataclass for environment-aware defaults
+- Command-line argument parsing and environment variable overrides
+- Logging with console, rotating global log, and per-file logs
+- Container detection (Docker, Podman, Kubernetes, etc.)
+- Translation quota handling with renewal countdown
+- Utility functions for safe type conversion
+- Optional Apprise notifications
+"""
+
+# standard libraries
+import argparse                                # https://docs.python.org/3/library/argparse.html
+import logging                                 # https://docs.python.org/3/library/logging.html
+import logging.handlers                        # https://docs.python.org/3/library/logging.handlers.html
+import os                                      # https://docs.python.org/3/library/os.html
+import re                                      # https://docs.python.org/3/library/re.html
+import shutil                                  # https://docs.python.org/3/library/shutil.html
+import string                                  # https://docs.python.org/3/library/string.html
+import sys                                     # https://docs.python.org/3/library/sys.html
+import time                                    # https://docs.python.org/3/library/time.html
+from dataclasses import dataclass              # https://docs.python.org/3/library/dataclasses.html
+from datetime import datetime                  # https://docs.python.org/3/library/datetime.html
+from pathlib import Path                       # https://docs.python.org/3/library/pathlib.html
+from typing import Optional, Union, Tuple, Dict, Any, Callable   # https://docs.python.org/3/library/typing.html
+
+# non-standard imports
+import deepl                                   # pip install --upgrade deepl   # https://github.com/DeepLcom/deepl-python
+import pendulum                                # pip install pendulum          # https://pendulum.eustace.io/docs/
+import deep_translator.exceptions              # pip install deep-translator   # https://pypi.org/project/deep-translator/
+from deep_translator import GoogleTranslator   # pip install deep-translator   # https://pypi.org/project/deep-translator/
+from humanfriendly import format_timespan      # pip install humanfriendly     # https://humanfriendly.readthedocs.io/
+from pypdf import PdfWriter                    # pip install pypdf             # https://pypdf.readthedocs.io/
+from pypdf.errors import PdfReadError          # pip install pypdf             # https://pypdf.readthedocs.io/
+from unidecode import unidecode                # pip install unidecode         # https://pypi.org/project/Unidecode/
+
+# intra-module imports
+from version import VERSION as __version__
+
+# Optional Apprise import for notifications
+try:
+    import apprise                           # pip install apprise            # https://pypi.org/project/apprise/
+    APPRISE_AVAILABLE = True
+except ImportError:
+    # apprise is not installed; notification functionality will be disabled
+    APPRISE_AVAILABLE = False
 
 
+# -----------------------------------------------------------------------
+# Module-level variables (accessible to all functions in this file)
+# -----------------------------------------------------------------------
+logger = logging.getLogger()
+# DEBUG variables
+DEBUG_DUMP_VARS = True  # Set to True to enable config/args debug dump
+DEBUG_NO_SEND_FILE = True  # Set to True to skip sending translated files (for testing)
 
 
-# ##################################################################
-# FUNCTIONS
-# ##################################################################
+# -----------------------------------------------------------------------
+# CLASS DEFINITIONS
+# -----------------------------------------------------------------------
+@dataclass
+class Config:
+    """
+    Central configuration object for translation workflow.
 
-def translateDocument(inputDocument, outputDocument, targetLang):
-  # Translate a formal document
-  # originally copied from https://github.com/DeepLcom/deepl-python#translating-documents
+    Attributes:
+        input_dir (Path): Directory to watch for input files.
+        output_dir (Path): Directory to place translated files.
+        log_dir (Path): Directory to write logs.
+        tmp_dir (Path): Temporary working directory.
+        auth_key (str): DeepL API authentication key.
+        server_url (str): Custom DeepL server URL (optional).
+        target_lang (str): Target language code (e.g., "EN-US").
+        check_period_min (float): Polling interval in minutes.
+        usage_renewal_day (int): Day of month usage renews.
+        put_original_first (bool): Whether to place original before translation in merged PDFs.
+        translate_filename (bool): Whether to translate filenames.
+    """
+    # Directory paths
+    input_dir:  Path = Path("/inputDir")  # note: if outside a container, this is changed to ./folders/input  in build_config()
+    output_dir: Path = Path("/outputDir") # note: if outside a container, this is changed to ./folders/output
+    log_dir:    Path = Path("/logs")      # note: if outside a container, this is changed to ./folders/logs
+    tmp_dir:    Path = Path("/tmp")       # note: if outside a container, this is changed to ./folders/tmp
+    # API and server settings
+    auth_key:   str = ""
+    server_url: str = ""
+    # Translation settings
+    target_lang:        str = "EN-US"
+    check_period_min:   float = 15
+    usage_renewal_day:  int = 0
+    put_original_first: bool = False
+    translate_filename: bool = False
+    # notify_urls: List[str]
 
-  logger.info(f'Uploading file to DeepL web API translation service.')
-  logger.debug(f"\tinput document:  {inputDocument}")
-  logger.debug(f"\toutput document: {outputDocument}")
-  logger.debug(f"\ttarget language: {targetLang}")
-  
-  global wasQuotaExceeded
-  retVal = False
-  try:
-    # Using translate_document_from_filepath() with file paths 
-    result = translator.translate_document_from_filepath(
-        inputDocument,
-        outputDocument,
-        target_lang=targetLang,
-        formality="prefer_more"
-    )
+class FilenameCleanseError(Exception):
+    """Custom exception raised when filename sanitization fails."""
+    def __init__(self, message: str = "Filename sanitization failed"):
+        super().__init__(message)
 
-    # # Alternatively you can use translate_document() with file IO objects
-    # with open(inputDocument, "rb") as in_file, open(outputDocument, "wb") as out_file:
-        # translator.translate_document(
-            # in_file,
-            # out_file,
-            # target_lang=targetLang,
-            # formality="prefer_more"
-        # )
+class QuotaExceededException(Exception):
+    """
+    Exception raised when translation quota is exceeded.
 
+    Wraps the original exception and copies its attributes for easier
+    downstream handling.
+    """
+    def __init__(self, original_exc: Exception):
+        # Call base Exception with the same message
+        super().__init__(str(original_exc))
+        self.original_exc = original_exc
 
-    logger.info(f'Translation complete!')
-    retVal = True
-    
-  except deepl.DocumentTranslationException as error:
-    # If an error occurs during document translation after the document was
-    # already uploaded, a DocumentTranslationException is raised. The
-    # document_handle property contains the document handle that may be used to
-    # later retrieve the document from the server, or contact DeepL support.
-    logger.error(f"Error after uploading to translation API.")
-    # logger.error(f"{error}")
-    # get various pieces of data from the error
-    errorType = type(error)                     # here it'll only return DocumentTranslationException, but originally it was in the just Exception section
-    docHNDL = str(error.document_handle)        # pull out the document ID & Key, in case the user needs to use them outside this script. 
-    tmpStr = ', document handle: ' + docHNDL
-    errMsg = str(error).replace(tmpStr, '.')    # DocumentTranslationException doesn't have a `message` attribute, so we'll make one
-    logger.error(f"\t{errMsg}")
-    p = re.compile(r'Document ID:\s+(\w+), key:\s+(\w+)')  # finish pulling the ID and key
-    m = p.match(docHNDL)
-    docID = m[1]
-    docKey = m[2]
-    logger.error(f"\tDocument ID:  {docID}")
-    logger.error(f"\tDocument Key: {docKey}")
-    doc_id = error.document_handle.id
-    doc_key = error.document_handle.key
-    logger.error(f"\tDocument ID2:  {doc_id}")
-    logger.error(f"\tDocument Key2: {doc_key}")
-    if errMsg == "Quota for this billing period has been exceeded.": # the error was that the quota was not empty, but still too low (note having to add the `.` because we added it in replace() above
-      wasQuotaExceeded = True
-  except deepl.exceptions.QuotaExceededException as error:
-    wasQuotaExceeded = True
-    logger.error("The quota for this billing period has been exceeded.")
-    logger.error(f"{error}")
-  except Exception as error:
-    # Errors during upload raise a DeepLException
-    logger.error("Unknown error occurred during the translation process.")
-    errorType = type(error)
-    logger.debug(f"{errorType}")
-    logger.error(f"{error}")
-   
-  return retVal
+        # Copy over all attributes from the original exception
+        for attr, value in vars(original_exc).items():
+            setattr(self, attr, value)
 
-def getTranslatedFilename(filename):
-  # translates the input filename
-  
-  # this is a bit (really) fragile.  It uses 2 APIs to do the translation (translators & langdetect) instead of using the DeepL translation engine and the quota thereof.
-  # langdetect is pretty stable as it is all offline, but I am only using it to make a print() statement pretty
-  logger.info("Translating input filename to target language.")
-  transText = filename
-  
-  
-  # translators don't handle underscores well
-  didFilenameHaveUnderscores = False
-  filename_new = filename.replace("_", " ")
-  if filename_new != filename:
-    didFilenameHaveUnderscores = True
-  
-  try:
-    origLang = langdetect.detect(filename_new)
-  except Exception as error:
-    origLang = "??"
-  logger.info(f"\t{origLang.upper()} -> {filename}")
-    
-  try: # multiple failure levels of translators []
-    selectedTranslator = 'google' # Google is better but I don't trust them to not screw with their webpage and break the translators API
-    transText = ts.translate_text(filename_new, translator=selectedTranslator, to_language=targetLangShort)
-  except Exception as error:
-    try:
-      selectedTranslator = 'bing' # Bing is the translators API default tool
-      transText = ts.translate_text(filename_new, translator=selectedTranslator, to_language=targetLangShort)
-    except Exception as error:
-      try:
-        selectedTranslator = 'deepl' # DeepL is what the rest of the program uses but the free version tends to error on a captcha
-        transText = ts.translate_text(filename_new, translator=selectedTranslator, to_language=targetLangShort)
-      except Exception as error:
-        logger.error("\tUnknown error occurred during the filename translator.")
-        logger.error(f"\t{error}")
-  # logger.error(f"\t{selectedTranslator}")
+class SizeBasedFilter(logging.Filter):
+    """
+    Logging filter that suppresses or downgrades oversized log messages.
 
-  if didFilenameHaveUnderscores: # undo the replacement of underscores/spaces
-    transText = transText.replace(" ", "_")
-  
-  logger.info(f"\t{targetLangShort.upper()} -> {transText}")
-  return transText
+    Args:
+        max_length (int): Maximum allowed message length. Messages longer
+                          than this are downgraded to INFO and replaced
+                          with a placeholder.
+    """
+    def __init__(self, max_length=500):
+        super().__init__()
+        self.max_length = max_length
 
-def getUsage():  # not used anymore
-  # @return The number of characters left in your usage allowance.
-  # originally copied from https://github.com/DeepLcom/deepl-python#translating-documents
-  charsLeft = 0
-  try:
-    usage = translator.get_usage()
-    
-    if usage.any_limit_reached:
-      logger.error('Translation limit reached.')
-      if usage.character.valid:
-        logger.error(f'\tCharacter limit: {usage.character.limit:,}')
-      if usage.document.valid:
-        logger.error(f'\tDocument limit: {usage.document.limit:,}')
-      return 0 # can NOT translate
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if len(msg) > self.max_length:
+            # Option 1: downgrade to INFO
+            record.levelno = logging.INFO
+            record.levelname = "INFO"
 
-    if usage.character.valid:
-      logger.info(f"Character usage: {usage.character.count:,} of {usage.character.limit:,}")
-      charsLeft = usage.character.limit - usage.character.count
-
-    if usage.document.valid:
-      logger.info(f"Document usage: {usage.document.count:,} of {usage.document.limit:,}")
-      if charsLeft == 0:  # only bother to estimate if (usage.character.valid == False)
-        avgCharPerDoc = 3000 * 3
-        docsLeft = usage.document.limit - usage.document.count
-        charsLeft = docsLeft * docsLeft
-        
-    logger.info(f"Characters left: {charsLeft:,}")
-  except Exception as error:
-    logger.warning(f"Unexpected error occurred when trying to determine the API usage allowance.")
-    logger.warning(f"\t{error}")
-  return charsLeft # can still translate
-
-def removeBlankPDFPages(filenamePDF):
-  # identify and remove blank pages from a PDF
-  logger.info('Attempting to remove any blank pages form the translated document.')
-  reader = PdfReader(filenamePDF)
-  writer = PdfWriter()
-  
-  try:
-    numPages = len(reader.pages)
-    for page_number in range(numPages):
-      page = reader.pages[page_number]
-      # Once you have your Page object, call its extractText() method to return a string of the page’s text ❸. The text extraction isn’t perfect. 
-      page_contents = page.get_contents()
-      if not (page_contents is None):
-        writer.add_page(page)
-        true_page_number = page_number+1
-        logger.info(f"\tPage {true_page_number} of {numPages} is not blank.")
-      else:
-        logger.info(f"\tPage {true_page_number} of {numPages} is blank.")
-    writer.write(filenamePDF)
-    logger.info('\tPDF cleaned successful.')
-    writer.close()
-    return True
-  except Exception as error:
-    writer.close()
-    logger.error("Unknown error occurred during the PDF blank page removal process.")
-    logger.error(f"{error}")
-    return False
-
-def appendPDFs(origPDF, translatedPDF, outputPDF):
-  # combine PDFs into a single PDF
-  removeBlankPDFPages(translatedPDF)
-  writer = PdfWriter()
-  
-  logger.info('Appending the translated PDF to the end of the original PDF.')
-  try:
-    if isPutOrigFirst:
-      writer.append(origPDF, "Original", None, True)
-      writer.append(translatedPDF, "Translation", None, True)
-    else:
-      writer.append(translatedPDF, "Translation", None, True)
-      writer.append(origPDF, "Original", None, True)
-    writer.write(outputPDF)
-    writer.close()
-    logger.info('\tPDF merger successful.')
-    return True
-  except Exception as error:
-    writer.close()
-    logger.error("Unknown error occurred during the PDF merging process.")
-    logger.error(f"{error}")
-    return False
-
-def getSafeFilename(inputFilename):
-  ## Make a file name that only contains safe characters  
-  # @param inputFilename A filename containing illegal characters  
-  # @return A filename containing only safe characters  
-  
-  # Set here the valid chars (note the lack of <space> as a valid char)
-  safechars = string.ascii_letters + string.digits + "-_."
-  try:
-      # trim whitespace off the edges of the filename
-      fileRoot = os.path.splitext(inputFilename)[0].strip()
-      fileExten = os.path.splitext(inputFilename)[1]
-      inputFilename = fileRoot  + fileExten
-      
-      # remove excessive spaces & convert whitespace to a single proper space
-      inputFilename = re.sub(r"\s+", " ", inputFilename)
-      
-      # convert spaces to underscores
-      inputFilename = inputFilename.replace(" ", "_")
-      
-      # replace non-ASCII chars with ASCII ones (e.g., ø to o, æ to ae)
-      # carve out special characters that I don't think unidecode() does well
-      inputFilename = inputFilename.replace("Å", "Aa")
-      inputFilename = inputFilename.replace("å", "aa")
-      inputFilename = inputFilename.replace("¢", "ø")
-      inputFilename = unidecode(inputFilename)
-      
-      # now brutally remove any non-ASCII, un-allowed characters
-      filteredList = list(filter(lambda c: c in safechars, inputFilename))
-      filterStr = ''.join(filteredList)
-      return filterStr
-  except:
-      return ""
-  pass 
-    
-def renameToSafeFilename(directory, oldFilename, newFilename):
-  # newFilename = getSafeFilename(oldFilename)
-  if oldFilename == newFilename:
-    logger.info(f'Renaming file unnecessary.')
-    return oldFilename # exit early if the same filenames are used
-
-  # make full path names
-  oldFullname = os.path.join(directory, oldFilename)
-  newFullname = os.path.join(directory, newFilename)
-
-  logger.info(f'Renaming file to a cleaner filename.')
-  logger.info(f"\told: {oldFilename}")
-  logger.info(f"\tnew: {newFilename}")
-
-  if os.path.isfile(newFullname):
-    logger.error(f"New filename already exists.")
-    return "" # blank return value indicates an error occurred
-  else:
-    try:
-      os.rename(oldFullname, newFullname)
-      logger.info(f'Renaming successful.')
-      return newFilename
-    except OSError as error:
-      logger.error(f"Unknown error when renaming the file.")
-      logger.error(f"{error}")
-      return "" # blank return value indicates an error occurred
-      
-def deleteFile(filename):
-  # deletes a file, with some error checking 
-  logger.info(f"Attempting to delete file:")
-  logger.info(f"\t{filename}")
-  if os.path.exists(filename):
-    try:
-      os.remove(filename)
-      logger.info(f"\tFile successfully deleted.")
-      return True
-    except:
-      logger.warning(f"\tError while trying to delete file: {filename}")
-      return False
-  else:
-    logger.warning(f"\tFile did not exist in the first place. Nothing to do.")
-    return True
-  
-def getCharCountOfPDF(filename): # not used anymore
-  # attempts to estimate how many characters are in a PDF
-  # does not work unless the PDF has been OCRed or otherwise includes text (e.g., printed from a Word document)
-  saved_text = ""
-  reader = PdfReader(filename)
-  numPages = len(reader.pages)
-  for page_number in range(numPages):
-    page = reader.pages[page_number]
-    # Once you have your Page object, call its extractText() method to return a string of the page’s text ❸. The text extraction isn’t perfect. 
-    page_content = page.extract_text()
-    saved_text = saved_text + page_content
-  # print(saved_text)
-  # print("-----------------------------")
-  charCount = len(saved_text)
-  logger.debug(f'Estimated number of characters in the file: {charCount:,}')
-  return charCount
-  
-def exitProgram(msg=""):
-  # exits the program, was going to do more but changed my mind
-  sys.exit(msg)   # exit the program
-  return
-  
-def sleepWithACountdown(secs, isTop=True):
-  # a rather involved subroutine to put the program to sleep and nicely output a countdown to the log.
-
-  # set some constants
-  days_inSecs    = 1 * 24 * 60 * 60
-  hours_inSecs   = 1      * 60 * 60
-  minutes_inSecs = 1           * 60
-  
-  if isTop: # isTop is there to handle recursive function issues
-    # create a output message
-    delayStr = []
-    totalSleepTime = secs
-    if totalSleepTime > days_inSecs:
-      (tmpVal, totalSleepTime) = divmod(totalSleepTime, days_inSecs)
-      delayStr.append(f"{tmpVal} day(s)")
-    if totalSleepTime > hours_inSecs:
-      (tmpVal, totalSleepTime) = divmod(totalSleepTime, hours_inSecs)
-      delayStr.append(f"{tmpVal} hour(s)")
-    if totalSleepTime > minutes_inSecs:
-      (tmpVal, totalSleepTime) = divmod(totalSleepTime, minutes_inSecs)
-      delayStr.append(f"{tmpVal} minute(s)")
-    if totalSleepTime > 0:
-      delayStr.append(f"{totalSleepTime} second(s)")
-    tmpStr = ", ".join(delayStr)
-    logger.info(f"Putting the program to sleep for {tmpStr}.")
-    # logger.info(f"Counting down the sleep period ...")
-    
-
-    # turn off the logger's automatic NewLine for this subroutine
-    origTerminator_CH = consoleHandler.terminator
-    consoleHandler.terminator = ""
-    if not (globalFileHandler is None): # note the creation of the GFL may have failed
-      origTerminator_GFL = globalFileHandler.terminator
-      globalFileHandler.terminator = ""
-      globalFileHandler.setFormatter(logging.Formatter('%(message)s')) # turn off the custom formatting too
-
-  
-  # an array of granularity levels
-  # period_letter, period_delay, period_minimum, secs_in_the_letter
-  periods = [
-    ('d',        days_inSecs,   2.1 * days_inSecs,      days_inSecs),
-    ('h',   5 * hours_inSecs,   9.9 * hours_inSecs,     hours_inSecs),
-    ('h',       hours_inSecs,         hours_inSecs,     hours_inSecs),
-    ('m', 5 * minutes_inSecs,   9.9 * minutes_inSecs,   minutes_inSecs),
-    ('m',     minutes_inSecs,         minutes_inSecs,   minutes_inSecs),
-    ('s',                  5,    9,                    1),
-    ('s',                  1,    -1,                    1)
-  ]
-  
-  # select which granularity we are at
-  for period_letter, period_delay, period_minimum, secs_in_the_letter in periods:
-    if secs > period_minimum:
-      delayPeriod = period_delay
-      delayLetter = period_letter
-      granularityThreshold = period_minimum
-      amountOfSecs = secs_in_the_letter
-      break
-      
-  # conduct the countdown
-  remaingSecs = secs
-  while remaingSecs > 0:
-    if remaingSecs < granularityThreshold:
-      sleepWithACountdown(remaingSecs, False) # the easiest way to change the delayLetter to the next level of granularity is to just recursively call the function
-      remaingSecs = 0
-    elif remaingSecs >= delayPeriod:
-      (i, remainder) = divmod(remaingSecs, amountOfSecs)
-      logger.info(f"{i}{delayLetter} ... ")
-      remaingSecs = remaingSecs - delayPeriod
-      time.sleep(delayPeriod)
-    elif remaingSecs < delayPeriod and remaingSecs > 0:
-      logger.info(f"{remaingSecs}{delayLetter} ... ")
-      time.sleep(remaingSecs)
-      remaingSecs = 0
-    else:
-      remaingSecs = 0
+            # Option 2: replace message entirely
+            record.msg = f"[suppressed oversized log message: {len(msg)} chars]"
+            record.args = ()
+        return True  # Always allow record through
 
 
-  if isTop:
-    # turn on the logger's automatic NewLine
-    consoleHandler.terminator = origTerminator_CH
-    if not (globalFileHandler is None):
-      globalFileHandler.terminator = origTerminator_GFL
+# -----------------------------------------------------------------------
+def parse_args() -> argparse.Namespace:
+    """
+    Parse command-line arguments for the translation script.
 
-  
-    # write final line (with restored NewLine)
-    logger.info(f"0s")
+    Returns:
+        argparse.Namespace: Parsed arguments
+    """
+    parser = argparse.ArgumentParser(description="Auto-translate files via a translation web service.", epilog=f"Version: {__version__}")
+    # Positional single-file mode
+    parser.add_argument("file", nargs="?", help="Single file to translate (single-file mode).")
 
-    # turn on the logger's formatting
-    if not (globalFileHandler is None):
-      globalFileHandler.setFormatter(globalFileFormatter)
-  return
+    # Directories and API
+    parser.add_argument("-i", "--input-dir",   help="Directory to watch for input files.")
+    parser.add_argument("-o", "--output-dir",  help="Directory to place translated files.")
+    parser.add_argument("-l", "--log-dir",     help="Directory to write logs.")
+    parser.add_argument("-k", "--auth-key", "--api-key", help="API/Auth key for translation service.")
+    parser.add_argument("-s", "--server-url",  help="Translation server URL (DEEPL_SERVER_URL).")
+    parser.add_argument("-t", "--target-lang", help="Target language (DEEPL_TARGET_LANG).")
+    parser.add_argument("-c", "--check-every-x-minutes", type=float, help="Polling interval in minutes.")
+    parser.add_argument("-r", "--renewal-day", type=int, help="Day of month usage renews (DEEPL_USAGE_RENEWAL_DAY).")
+    parser.add_argument("-B", "--original-before-translation", dest="original_before_translation",
+                                        action="store_const", const=True, default=None,
+                                        help="If set, copy original to output before translation.")
+    parser.add_argument("-N", "--translate-filename", dest="translate_filename",
+                                        action="store_const", const=True, default=None,
+                                        help="If set, modify filename to indicate translation.")
+    # parser.add_argument("-a", "--notify-urls", help="Comma-separated Apprise URLs for notifications.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    return parser.parse_args()
 
-def numbOfSecsTillRenewal(defaultPeriodToWait_Days=7):
-  # calculates the number of seconds until the next renewal of the usage allowance.  Default is 7 days, or ENV{DEEPL_USAGE_RENEWAL_DAY} minus Now().
-  
-  # default value
-  # defaultPeriodToWait_Days = 7 # default period to wait
-  waitUntilNewUsage_Sec = defaultPeriodToWait_Days * 24 * 60 * 60
 
-  # calculate the time to wait, if the usageRenewalDay value is set (default value is 0, which fails the if statement)
-  logger.debug(f"\tnumbOfSecsTillRenewal() debug output ...")
-  logger.debug(f"\tusageRenewalDay:         {usageRenewalDay}")
-  if usageRenewalDay >= 1 and usageRenewalDay <= 31 : # use a more accurate day for the sleep time
-    now_dateTime  = datetime.now()
-    if usageRenewalDay > now_dateTime.day:
-      lastRenewal_dateTime = datetime(now_dateTime.year, now_dateTime.month, usageRenewalDay) + relativedelta(months=-1)
-    else:
-      lastRenewal_dateTime = datetime(now_dateTime.year, now_dateTime.month, usageRenewalDay)
-    nextRenewal_dateTime = lastRenewal_dateTime + relativedelta(days=1, months=1) # add 1 day to the renewal date to avoid any corner case issues (time zone mismatch [local vs API servers] is really my concern)
-    duration_dateTime = nextRenewal_dateTime - now_dateTime
-    waitUntilNewUsage_Sec = duration_dateTime.total_seconds()
-
-    logger.debug(f"\tlastRenewal_dateTime = {lastRenewal_dateTime}")
-    logger.debug(f"\tnow_dateTime = {now_dateTime}")
-    logger.debug(f"\tnow_dateTime (parts) = {now_dateTime.year} -- {now_dateTime.month} -- {now_dateTime.day}")
-    logger.debug(f"\tnextRenewal_dateTime = {nextRenewal_dateTime}")
-    logger.debug(f"\tduration_dateTime = {duration_dateTime}")
-    logger.debug(f"\twaitUntilNewUsage_Sec = {waitUntilNewUsage_Sec}")
-  return waitUntilNewUsage_Sec
-
-def to_bool(value, defaultVal):
-  # Convert a value (of unknown type) to boolean.
-  if (type(value) is bool):
-    return value
-  elif type(value) == int or type(value) == float:
-    if value != 0: 
-      return True
-    else:
-      return False
-  elif (type(value) is str):
-    if value.lower() in ("yes", "y", "true",  "t", "1", "1.0"): 
-      return True
-    elif value.lower() in ("no",  "n", "false", "f", "0", "0.0", "", "none", "[]", "{}"): 
-      return False
-    else:
-      return defaultVal
-  else:
-    return defaultVal
-
-def reportResults():
-  logger.info(f"Final output report")
-  logger.info(f"\tFinal output report")
-  return
-  
-
-  
-# ##################################################################
+# -----------------------------------------------------------------------
 # MAIN
-# ##################################################################
+# -----------------------------------------------------------------------
+def main() -> None:
+    """
+    Entry point for the translation workflow.
 
+    - Initializes logging
+    - Parses arguments and builds config
+    - Validates configuration and directories
+    - Connects to translation API
+    - Runs in single-file or directory-watch mode
+    - Handles quota exceeded events with renewal countdown
+    """
 
-# -------------------------------------------------------------
-# setup logging
-logger = logging.getLogger(os.path.basename(__file__))
-logger.setLevel(logging.DEBUG) # sets the level below which _no_ handler may go
-# setup the STDOUT log
-consoleHandler = logging.StreamHandler() # well this is annoying.  StreamHandler is logging.* while newer handlers are logging.handlers.*
-consoleHandler.setLevel(logging.DEBUG)
-consoleFormatter = logging.Formatter('%(message)s')
-consoleHandler.setFormatter(consoleFormatter)
-logger.addHandler(consoleHandler)
+    # init logger, and start output to STDOUT
+    setup_logging()
 
-# -------------------------------------------------------------
-# initialize configuration variables
-isInDocker      = bool(os.getenv("AM_I_IN_A_DOCKER_CONTAINER",0))            # (hidden) Only used to set variables to different values if you're not in a Docker container
-  # export DEEPL_SERVER_URL="http://localhost:3000"
-  # see mock DeepL server at https://github.com/DeepLcom/deepl-mock
-  # and the pre-made Docker image at https://hub.docker.com/r/thibauddemay/deepl-mock
-auth_key           =     os.getenv("DEEPL_AUTH_KEY", "ThisIsABogusTestingKey")  # (mandatory) get your key at https://www.deepl.com/account/usage
-serverURL          =     os.getenv("DEEPL_SERVER_URL", "")                      # (optional) "" (i.e., an empty string) uses the actual DeepL server, anything else is for testing 
-targetLang         =     os.getenv("DEEPL_TARGET_LANG","EN-US")                 # (near mandatory)  The language isn't really changeable on the fly.  Assumes you want all your files translated to the same language
-usageRenewalDay    = int(os.getenv("DEEPL_USAGE_RENEWAL_DAY",0))                # (optional) If you put the day of the month your DeepL allowance resets, then the expired usage sleeping will be more accurate.  
-checkPeriodMin     = int(os.getenv("CHECK_EVERY_X_MINUTES",15))                 # (optional) How often you want the inputDir scanned for new files
-isPutOrigFirst     = to_bool(os.getenv("ORIGINAL_BEFORE_TRANSLATION","False"), False)    # (optional) Which file goes first in the final output, the translation or the original (default: original then translation)
-isTransFilename    = to_bool(os.getenv("TRANSLATE_FILENAME","False"), True)    # (optional) Do you want the filename to be translated as well as the contents?
-if isInDocker:
-  inputDir  = "/inputDir/"   # mapped via Docker
-  outputDir = "/outputDir/"  # mapped via Docker
-  logDir    = "/logDir/"     # mapped via Docker
-  tmpDir    = "/tmpDir/"     # hidden from outside Docker
-  allowFileTranslation = True
-  allowFileDeletion = True
-  allowToExitWithoutLoop = False
-else:
-  inputDir  = "./_test_dirs/inputDir/"   # un-translated docs go here
-  outputDir = "./_test_dirs/outputDir/"  # merged & translated docs go here
-  logDir    = "./_test_dirs/logDir/"     # log files go here
-  tmpDir    = "./_test_dirs/tmpDir/"     # translated but un-merged docs go here (before merging)
-  allowFileTranslation = False
-  allowFileDeletion = False
-  allowToExitWithoutLoop = True
-  # variables shown to outside world
-scriptVersion = "2.2.0d"
-  # internal variables
-wasQuotaExceeded = False
-checkPeriodSec = checkPeriodMin * 60 # note my inconsistency between "_Sec" and "Sec" (no underscore) when naming variables.  I know I should be better.
+    # read the commandline args and ENVs, setup cfg object
+    args = parse_args()
+    # Merge ENVs with the args, args taking precedence
+        # Note: args.file does not migrate to cfg, as it is only for single file mode.
+    cfg = build_config(args)
 
+    # Now setup the global log file (note: log_dir may not exist, fails gracefully)
+    global_file_handler, global_log_path = add_global_file_logger(cfg.log_dir)
+    if DEBUG_DUMP_VARS:
+        debug_dump(args, name="args")
+        debug_dump(cfg, name="Config")
 
-# setup the global log file
-try:
-  globalLogFile = os.path.join(logDir, "_autotranslate.log")
-  globalFileHandler = logging.handlers.RotatingFileHandler(globalLogFile ,'a',34359738368,3) # filename, append, number of bytes max, number of logs max
-  globalFileHandler.setLevel(logging.INFO)
-  globalFileFormatter = logging.Formatter('%(asctime)s - %(levelname)7s - %(message)s')
-  globalFileHandler.setFormatter(globalFileFormatter)
-  logger.addHandler(globalFileHandler)
-  globalFileHandler.setFormatter(logging.Formatter('%(message)s')) # turn off the custom formatting too
-  logger.info(f"") # start on a fresh line (in-case the server crashed mid-line the previous run)
-  globalFileHandler.setFormatter(globalFileFormatter) # turn the formatting back on
-  logger.info(f"Creating global log file!")
-  logger.info(f"\tGlobal Log file: {globalLogFile}")
-except Exception as error:
-  globalFileHandler = None # assign the None value if fileHandler failed
-  logger.info(f"") # start on a fresh line (in-case the server crashed mid-line the previous run)
-  logger.warning(f"Unable to write to global log file!")
-  logger.warning(f"\tGlobal Log file: {globalLogFile}")
-  logger.warning(f"\t{error}")
-logger.info(f'----------------------------------------') # added separator line to global log
-logger.info(f'--- Starting new execution of script ---') 
-logger.info(f'----------------------------------------') # added separator line to global log
-
-# spit out some debug info
-if True:  # really just here for indentation and code folding purposes
-  logger.debug(f"Configuration Variables are ...")
-  tmpVarA = os.environ.get("DEEPL_AUTH_KEY")
-  tmpVarB = os.environ.get("DEEPL_SERVER_URL")
-  tmpVarC = os.environ.get("DEEPL_TARGET_LANG")
-  tmpVarD = os.environ.get("CHECK_EVERY_X_MINUTES")
-  tmpVarE = os.environ.get("DEEPL_USAGE_RENEWAL_DAY")
-  tmpVarF = os.getenv("ORIGINAL_BEFORE_TRANSLATION")
-  tmpVarG = os.getenv("TRANSLATE_FILENAME")
-  targetLangShort = targetLang[0:2].lower()
-  # logger.debug(f"\tDEEPL_AUTH_KEY:          {tmpVarA}")
-  # logger.debug(f"\tauth_key:                {auth_key}")
-  logger.debug(f"\tDEEPL_SERVER_URL:            {tmpVarB}")
-  logger.debug(f"\t    serverURL:               {serverURL}")
-  logger.debug(f"\tDEEPL_TARGET_LANG:           {tmpVarC}")
-  logger.debug(f"\t    targetLang:              {targetLang}")
-  logger.debug(f"\t    targetLangShort:         {targetLangShort}")
-  logger.debug(f"\tCHECK_EVERY_X_MINUTES:       {tmpVarD}")
-  logger.debug(f"\t    checkPeriodMin:          {checkPeriodMin}")
-  logger.debug(f"\tDEEPL_USAGE_RENEWAL_DAY:     {tmpVarE}")
-  logger.debug(f"\t    usageRenewalDay:         {usageRenewalDay}")
-  logger.debug(f"\tORIGINAL_BEFORE_TRANSLATION: {tmpVarF}")
-  logger.debug(f"\t    isPutOrigFirst:          {isPutOrigFirst}")
-  logger.debug(f"\tTRANSLATE_FILENAME:           {tmpVarG}")
-  logger.debug(f"\t    isTransFilename:         {isPutOrigFirst}")
-  logger.debug(f"\tinputDir:       {inputDir}")
-  logger.debug(f"\toutputDir:      {outputDir}")
-  logger.debug(f"\tlogDir:         {logDir}")
-  logger.debug(f"\ttmpDir:         {tmpDir}")
-  logger.debug(f"")
-  logger.debug(f"\tScript name:             {__file__}")
-  logger.debug(f"\tScript version:          {scriptVersion}")
-  thisFilesLastModDate = datetime.fromtimestamp(os.path.getmtime(__file__))
-  logger.debug(f"\tScript last modified:    {thisFilesLastModDate}")
-
-# check that the directories are OK
-if not os.access(inputDir, os.W_OK): # need to write due to safe filename renaming
-  logger.error(f"Unable to write to input directory!")
-  logger.error(f"\t{inputDir}")
-  logger.error(f"FATAL ERROR!  Closing Program!")
-  exitProgram()
-if not os.access(outputDir, os.W_OK):
-  logger.error(f"Unable to write to output directory!")
-  logger.error(f"\t{outputDir}")
-  logger.error(f"FATAL ERROR!  Closing Program!")
-  exitProgram()
-if not os.access(tmpDir, os.W_OK):
-  logger.error(f"Unable to write to temporary directory!")
-  logger.error(f"\t{tmpDir}")
-  logger.error(f"FATAL ERROR!  Closing Program!")
-  exitProgram()
-if not os.access(logDir, os.W_OK): # a non-fatal error if you can't write logs
-  logger.warning(f"Unable to write to log file directory!")
-  logger.warning(f"\t{logDir}")
-  logger.warning(f"Program will still continue, but this should be attended to.")
-
-
-# -------------------------------------------------------------
-# establish connection with API server
-try:
-  logger.info(f"Attempting to establish communication with the Web API server.")
-  if serverURL != "":
-    logger.info(f"\tUsing custom Web API server: {serverURL}") # keep as INFO as it is such a rare occurrence that the event should be noted in the log
-    translator = deepl.Translator(auth_key, server_url=serverURL)
-  else:
-    logger.debug(f"\tUsing normal Web API server.")
-    translator = deepl.Translator(auth_key)
-except Exception as error:
-  logger.error(f"Critical error occurred when trying to establish communication with the Web API server.")
-  logger.error(f"Closing program!")
-  logger.error(f"\t{error}")
-  exitProgram("Exiting program.")   # exit the program/loop
-
-
-# -------------------------------------------------------------
-# process any files in the directory
-logger.info(f'----------------------------------------') # added separator line to global log
-while True: # loop forever
-
-  # determine if there is any usage allowance left before moving on to processing files
-  # logger.info(f"Check API usage allowance.")
-  if wasQuotaExceeded:  # allowance is non-zero but too low to do documents
-    wasQuotaExceeded = False # clear the flag set during a previous attempt at translating a document (i.e., quota not empty but too low to process documents)
-    logger.error("The quota for this billing period has been exceeded.")
-    # calculate the time to wait
-    sleepWithACountdown(numbOfSecsTillRenewal())
-    continue # restart while loop
-  else:  # check if the usage is zero
+    # Ensure all config variables have valid values
     try:
-      usage = translator.get_usage()
-      if usage.any_limit_reached: # no more allowance this month, or too low too do documents.
-        logger.error("The quota for this billing period has been exceeded.")
-        # calculate the time to wait
-        sleepWithACountdown(numbOfSecsTillRenewal())
-        continue # restart while loop
-    except Exception as error:
-      logger.warning(f"Unexpected error occurred when trying to determine the API usage allowance.")
-      logger.warning(f"\t{error}")
+        cfg = validate_cfg_variables(cfg)
+    except ValueError as e:
+        logger.error(e)
+        sys.exit(2)   # Fatal error
+    # Ensure all dirs exist and are writable
+    if not validate_directories(cfg):
+        sys.exit(2)  # Fatal error
 
-  # get every PDF file in inputDir; send it off for translation; output the result in outputDir
-  for file in os.listdir(os.fsencode(inputDir)):
-      if wasQuotaExceeded:  # immediate exit out if the quota is exceeded
-        break
+    # connect with the translation API before we do any processing
+    translator = confirm_api_connection(cfg.auth_key, cfg.server_url)
+    if translator is None:
+        logger.info("Unable to open translator.")
+        logger.info("Program closing")
+        sys.exit(2)  # Fatal error
 
-      filename = os.fsdecode(file)
-      filename_orig = filename
-      if filename.lower().endswith(".pdf"): 
 
-        # clean the filename to avoid any un-safe chars that would prevent us from uploading the file to the web API
-        filename = getSafeFilename(filename)
-        if filename == "":  # a blank filename is the result a failed cleaning
-          # report the error and skip
-          logger.info(f'Processing file: {os.path.join(inputDir, os.fsdecode(file))}') # note the usage on the un-cleaned file name for this log entry
-          logger.error(f'Unable to properly clean the filename to allow uploading to the Web API.')
-          logger.error(f'Skipping file.')
+    # now we move into doing work
+    if args.file is not None:
+        # single file mode
+        file_path = Path(args.file)
+        try:
+            process_file(file_path, cfg, translator)
+        except QuotaExceededException as qe:
+            # this is really not a big deal for a 1-and-done file translation
+            logger.error("Translation quota exceeded during file processing.")
+            logger.error(f"{qe}")
+            sys.exit(3)  # Quota exceeded exit code
+    else:
+        # directory mode
+        check_period_sec = int(60 * cfg.check_period_min)  # convert minutes to seconds
+        while True: # loop forever
+            for file_path in cfg.input_dir.iterdir():
+                if file_path.is_dir():
+                    continue
+                if file_path.name.startswith("."):
+                    continue
+                if file_path.suffix.lower() == ".pdf": # only process PDF files
+                    try:
+                        # connect with the translation API before we do any processing
+                        # program may have been running for a long time and needs refreshing
+                        if translator is None:
+                            translator = confirm_api_connection(cfg.auth_key, cfg.server_url)
+                        process_file(file_path, cfg, translator)
+                    except QuotaExceededException as qe:
+                        logger.error("Translation quota exceeded during file processing.")
+                        logger.error(f"{qe}")
+
+                        translator = None # release the translator object
+                        wait_seconds = num_seconds_till_renewal(cfg.usage_renewal_day)
+                        if global_file_handler is not None:
+                            sleep_with_progressbar_countdown(global_file_handler, wait_seconds)
+                        else:
+                            logger.info(f"Sleeping for {format_timespan(wait_seconds)} until usage renewal.")
+                            time.sleep(wait_seconds)
+                        break  # break out of the for loop to re-check the input directory after sleep
+
+                    time.sleep(20) # Delay for X seconds to prevent pounding on the server.
+
+            # sleep for the configured period before checking again
+            if (cfg.check_period_min >= 30) and (global_file_handler is not None):
+                translator = None # release the translator object
+                sleep_with_progressbar_countdown(global_file_handler, secs=check_period_sec,
+                                                    use_time_labels=False, use_percent_labels=False)
+            else:
+                # logger.info(f"Sleeping for {format_timespan(cfg.check_period_sec)}.")
+                time.sleep(check_period_sec)
+
+    # close the global log file
+    close_file_logger(global_file_handler, global_log_path)
+    sys.exit(0)
+
+
+
+# -----------------------------------------------------------------------
+# Core Functions
+# -----------------------------------------------------------------------
+
+def setup_logging() -> None:
+    """
+    Configure global logger with console handler and filters.
+
+    - Sets DEBUG level
+    - Adds console handler with simple formatter
+    - Applies SizeBasedFilter to suppress oversized messages
+    """
+
+    # logger = logging.getLogger()  # defined at module (global) level
+    # Avoid adding duplicate handlers if setup_logging is called multiple times
+    if logger.handlers:
+        return
+    logger.setLevel(logging.DEBUG) # sets the level below which _no_ handler may go
+
+    # Console/STDOUT handler
+    ch = logging.StreamHandler(sys.stdout)  # well this is annoying.  StreamHandler is logging.* while newer handlers are logging.handlers.*
+    ch.setLevel(logging.DEBUG)
+    ch.setFormatter(logging.Formatter('%(message)s'))
+
+    # add filtering as DeepL library is _very_ verbose at DEBUG level (i.e., it dumps a binary file into the log)
+    # ch.addFilter(DowngradeEncodingDetectionFilter())
+    ch.addFilter(SizeBasedFilter(max_length=500))  # suppress messages longer than 5000 characters
+
+    logger.addHandler(ch)
+
+    return
+
+
+def build_config(args: argparse.Namespace) -> Config:
+    """
+    Build configuration object from CLI args and environment variables.
+
+    Args:
+        args (argparse.Namespace): Parsed CLI arguments.
+
+    Returns:
+        Config: Fully populated configuration object.
+    """
+
+    # get default values
+    default = Config()
+    new_cfg = Config()
+
+    # make some changes if we're running outside a container
+    if not is_in_container():
+        default.input_dir   = Path("./folders/input")
+        default.output_dir  = Path("./folders/output")
+        default.log_dir     = Path("./folders/logs")
+        default.tmp_dir     = Path("./folders/tmp")
+
+
+    # Map CLI args and environment variables. CLI overrides env.
+    new_cfg.input_dir           = Path( to_str( arg_or_env( args.input_dir,             "INPUT_DIR"),             str(default.input_dir) ))
+    new_cfg.output_dir          = Path( to_str( arg_or_env( args.output_dir,            "OUTPUT_DIR"),            str(default.output_dir) ))
+    new_cfg.log_dir             = Path( to_str( arg_or_env( args.log_dir,               "LOG_DIR"),               str(default.log_dir) ))
+    new_cfg.tmp_dir             = default.tmp_dir
+    new_cfg.auth_key            = to_str(arg_or_env( args.auth_key,                     "DEEPL_AUTH_KEY"),           "")
+    new_cfg.server_url          = to_str(arg_or_env( args.server_url,                   "DEEPL_SERVER_URL"),         "")
+    new_cfg.target_lang         = to_str(arg_or_env( args.target_lang,                  "DEEPL_TARGET_LANG"),        str(default.target_lang) )
+    new_cfg.usage_renewal_day   = to_int(arg_or_env( args.renewal_day,                  "DEEPL_USAGE_RENEWAL_DAY"),  default.usage_renewal_day)
+    new_cfg.check_period_min  = to_float(arg_or_env( args.check_every_x_minutes,        "CHECK_EVERY_X_MINUTES")  ,  default.check_period_min)
+    new_cfg.translate_filename  = to_bool(arg_or_env( args.translate_filename,          "TRANSLATE_FILENAME")     ,  default.translate_filename)
+    new_cfg.put_original_first     = to_bool(arg_or_env( args.original_before_translation, "ORIGINAL_BEFORE_TRANSLATION"), default.put_original_first)
+    # notify_urls_raw = args.notify_urls if args.notify_urls is not None else env_or_default("NOTIFY_URLS") or ""
+    # notify_urls = [u.strip() for u in notify_urls_raw.split(",") if u.strip()]
+
+    # all bounds checking done in validate_cfg_variables(cfg)
+
+    return new_cfg
+
+
+def add_global_file_logger(log_dir: Path, log_filename: str = "_autotranslate.log") -> Tuple[Optional[logging.FileHandler], Optional[Path]]:
+    """
+    Add a rotating global log file handler.
+
+    Args:
+        log_dir (Path): Directory for log file.
+        log_filename (str): Log filename.
+
+    Returns:
+        (logging.FileHandler, Path): File handler and log file path.
+    """
+
+    # Global log file
+    g_fh = None # assign the None value if fileHandler failed
+    log_file = log_dir / log_filename
+
+    try:
+        # confirm log_dir exists, throw error otherwise
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        num_bytes = 32 * 1024 * 1024 * 1024 #  32 GiB
+        g_fh = logging.handlers.RotatingFileHandler(log_file ,'a',num_bytes,3) # filename, append, number of bytes max, number of logs max
+        g_fh.setLevel(logging.DEBUG)
+        g_ff = logging.Formatter('%(asctime)s - %(levelname)7s - %(message)s')
+        g_fh.setFormatter(g_ff)
+        logger.addHandler(g_fh)
+
+        # write a quick new line, without any FileFormatter formatting
+        g_fh.setFormatter(logging.Formatter('%(message)s')) # turn off the custom formatting too (just to write the next line)
+        logger.info(f"") # start on a fresh line (in-case the server crashed mid-line the previous run)
+        g_fh.setFormatter(g_ff) # turn the formatting back on
+
+        logger.info(f"Creating global log file!")
+        logger.info(f"\tGlobal Log file: {log_file}")
+    except (OSError, PermissionError) as error:
+        g_fh = None # assign the None value if fileHandler failed
+        log_file = None # assign the None value if fileHandler failed
+        logger.info(f"") # start on a fresh line (in-case the server crashed mid-line the previous run)
+        logger.warning(f"Unable to write to global log file!")
+        logger.warning(f"\tGlobal Log file: {log_file}")
+        logger.warning(f"\t{error}")
+
+    # start the log
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    logger.info(f'----------------------------------------')
+    logger.info(f'--- Starting new execution of script ---')
+    logger.info(f'---        {timestamp}       ---')
+    logger.info(f'----------------------------------------')
+
+    return g_fh, log_file
+
+
+def add_file_logger(log_dir: Path, log_filename: str) -> Tuple[Optional[logging.FileHandler], Optional[Path]]:
+    """
+    Add a per-file log handler with timestamped filename.
+
+    Args:
+        log_dir (Path): Directory for log file.
+        log_filename (str): Base filename.
+
+    Returns:
+        (logging.FileHandler, Path): File handler and log file path.
+    """
+
+    # create a timestamp safe for filenames (no colons)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    # setup the individual (non-global) log file
+    basename = Path(log_filename).stem
+    log_file_path = log_dir /f"{basename}_{timestamp}.log"
+
+    file_handler = None
+    try:
+        file_handler = logging.FileHandler(log_file_path)
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)7s - %(message)s'))
+        logger.addHandler(file_handler)
+    except (OSError, PermissionError) as error:
+        logger.warning(f"Unable to write to individual log file!")
+        logger.warning(f"\tIndividual Log file: {log_file_path}")
+        logger.warning(f"\t{error}")
+
+    return file_handler, log_file_path
+
+
+def close_file_logger(filehandler: Optional[logging.FileHandler], log_file: Optional[Union[Path, str]] = None) -> None:
+    """
+    Close and remove a file handler from the logger.
+
+    Args:
+        filehandler (logging.FileHandler): File handler to close.
+        log_file (Path|str, optional): Path to the log file for debug output.
+    """
+    try:
+        if filehandler is not None:
+            logger.removeHandler(filehandler) # close the log before moving on to the next file
+    except (OSError, ValueError) as error:
+        logger.debug(f"Unable to close log file.  (Probably never opened in the 1st place.)")
+        if log_file is not None:
+            logger.debug(f"\tLog file: {log_file}")
+        logger.debug(f"\t{error}")
+    return
+
+
+def validate_cfg_variables(cfg: Config) -> Config:
+    """
+    Validate and normalize configuration values.
+
+    Args:
+        cfg (Config): Configuration object to validate.
+
+    Returns:
+        Config: Updated configuration with corrected values.
+
+    Raises:
+        ValueError: If mandatory fields (e.g., auth_key, target_lang) are invalid.
+    """
+
+    # get default values
+    default_cfg = Config()
+
+    # Mandatory API key
+    if (not cfg.auth_key) or (cfg.auth_key.strip() == ""):
+        raise ValueError("Auth key is mandatory but missing or empty.")
+
+    # Check if target language is supported
+    target_lang = get_valid_deepl_target_lang(cfg.target_lang)
+    if target_lang is None:
+        raise ValueError(f"Target Language is not a valid DeepL target language code: {cfg.target_lang}.")
+    else:
+        cfg.target_lang = target_lang
+
+    # some basic bounds checking
+    if (cfg.usage_renewal_day <= 0) or (cfg.usage_renewal_day > 31):
+        cfg.usage_renewal_day = 0
+        logger.error(f"Usage Renewal Day out of bounds and set to 0 (no renewal day).")
+
+    if cfg.check_period_min <= 0:
+        cfg.check_period_min = default_cfg.check_period_min
+        logger.error(f"Check Directory Period (minutes) out of bounds and set to {default_cfg.check_period_min}.")
+
+    # Add more validations as needed
+    # if cfg.notify_urls and not APPRISE_AVAILABLE:
+    #     logging.warning("Notifications configured but Apprise is not installed; notifications will be skipped.")
+
+
+    return cfg
+
+
+def get_valid_deepl_target_lang(lang_code: str) -> Optional[str]:
+    """
+    Validate and normalize a DeepL target language code.
+    Can take code or language name, if the same as in the DeepL docs.
+    https://developers.deepl.com/docs/getting-started/supported-languages#translation-target-languages
+
+    Args:
+        lang_code (str): Language code to validate.
+
+    Returns:
+        Optional[str]: Valid DeepL code, or None if unsupported.
+    """
+
+    # https://developers.deepl.com/docs/getting-started/supported-languages#translation-target-languages
+    DEEPL_LANGUAGES: Dict[str, str] = {
+        "AR": "Arabic",
+        "BG": "Bulgarian",
+        "CS": "Czech",
+        "DA": "Danish",
+        "DE": "German",
+        "EL": "Greek",
+        "EN": "English",  # unspecified variant for backward compatibility; we recommend usingEN-GB or EN-US instead)
+        "EN-GB": "English (British)",
+        "EN-US": "English (American)",
+        "ES": "Spanish",
+        "ES-419": "Spanish (Latin American)",
+        "ET": "Estonian",
+        "FI": "Finnish",
+        "FR": "French",
+        "HU": "Hungarian",
+        "ID": "Indonesian",
+        "IT": "Italian",
+        "JA": "Japanese",
+        "KO": "Korean",
+        "LT": "Lithuanian",
+        "LV": "Latvian",
+        "NB": "Norwegian (Bokmål)",
+        "NL": "Dutch",
+        "PL": "Polish",
+        "PT": "Portuguese", # (unspecified variant for backward compatibility; we recommend using PT-BR or PT-PT instead)
+        "PT-BR": "Portuguese (Brazilian)",
+        "PT-PT": "Portuguese (European)", # (all Portuguese variants excluding Brazilian Portuguese)
+        "RO": "Romanian",
+        "RU": "Russian",
+        "SK": "Slovak",
+        "SL": "Slovenian",
+        "SV": "Swedish",
+        "TR": "Turkish",
+        "UK": "Ukrainian",
+        "ZH": "Chinese (Simplified)", #  (unspecified variant for backward compatibility; we recommend using ZH-HANS or ZH-HANT instead)
+        "ZH-HANS": "Chinese (simplified)",
+        "ZH-HANT": "Chinese (traditional)"
+    }
+
+    # Exceptions
+    if lang_code.strip().lower() in ("zh-cn", "zh", "chinese (simplified)"):
+        lang_code = "zh-hans"
+    elif lang_code.strip().lower() in ("no", "norwegian"):
+        lang_code = "nb"
+    elif lang_code.strip().lower() in ("en-ca", "en-ph"):
+        lang_code = "en-us"
+    elif lang_code.strip().lower() in ("en", "english", "en-au", "en-nz", "en-za", "en-in", "en-ie", "en-sg", "en-hk", "en-uk"):
+        lang_code = "en-gb"
+    elif lang_code.strip().lower() in ("pt", "portuguese"):
+        lang_code = "pt-pt"
+
+
+    # Normal processing
+    code_format = lang_code.strip().upper()
+    name_format = lang_code.strip().lower()
+
+    for code, name in DEEPL_LANGUAGES.items():
+        if code_format == code.upper() or name_format == name.lower():
+            return code
+    return None
+
+
+def validate_directories(cfg: Config) -> bool:
+    """
+    Ensure required directories exist and are writable.
+
+    Args:
+        cfg (Config): Configuration object.
+
+    Returns:
+        bool: True if all directories are valid, False otherwise.
+    """
+    # Ensure all directories exist
+    # Directories to check
+    dirs = {
+        "input_dir": cfg.input_dir,
+        "output_dir": cfg.output_dir,
+        "tmp_dir": cfg.tmp_dir,
+        "log_dir": cfg.log_dir,
+    }
+
+    can_continue = True
+    for name, path in dirs.items():
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            if not os.access(str(path), os.W_OK):
+                raise PermissionError("No write permission")
+        except (OSError, PermissionError) as error:
+            logger.error(f"Cannot write to required directory: {name}")
+            logger.error(f"\t{path}")
+            logger.error(f"\t{error}")
+            if name == "log_dir":
+                logger.warning(f"Program will still continue, but this should be attended to.")
+            else:
+                # sys.exit(2)  # Fatal error
+                can_continue = False
+
+
+    return can_continue
+
+
+def confirm_api_connection(auth_key: str, server_url: str = "") -> Optional[deepl.DeepLClient]:
+    """
+    Attempt to establish connection with DeepL API.
+
+    Args:
+        auth_key (str): DeepL API authentication key.
+        server_url (str): Optional custom server URL.
+
+    Returns:
+        deepl.DeepLClient|None: Client if successful, None otherwise.
+
+    Raises:
+        AuthorizationException: Invalid API key.
+        ConnectionException: Network error.
+        DeepLException: API error.
+        ValueError: Invalid arguments.
+        OSError: System/network error.
+    """
+
+    translator = None
+    # deepl.http_client.max_network_retries = 3 # default is 5 retires; I see no reason to change it
+    try:
+        logger.info(f"Attempting to establish communication with the Web API server.")
+        if server_url != "":
+            logger.info(f"\tUsing custom Web API server: {server_url}") # keep as INFO as it is such a rare occurrence that the event should be noted in the log
+            translator = deepl.DeepLClient(auth_key, server_url=server_url)
         else:
-          # create variables for all the files
-          inputFile  = os.path.join(inputDir, filename)
-          outputFile = os.path.join(outputDir, filename)
-          tmpFile    = os.path.join(tmpDir, filename)
-          logFile    = os.path.join(logDir,os.path.splitext(filename)[0] + '.log')
-          if isTransFilename:  # rename if we are using the translated filename instead of the safe one
-            outputFile = os.path.join(outputDir, getTranslatedFilename(filename_orig))
-          
+            logger.debug(f"\tUsing normal Web API server.")
+            translator = deepl.DeepLClient(auth_key)
+    except deepl.AuthorizationException as error:
+        logger.error("Authorization failed: invalid API key.")
+        logger.error(f"\t{error}")
+        translator = None
+    except deepl.ConnectionException as error:
+        logger.error("Connection error: unable to reach DeepL API server.")
+        logger.error(f"\t{error}")
+        translator = None
+    except deepl.DeepLException as error:
+        logger.error("DeepL API returned an error.")
+        logger.error(f"\t{error}")
+        translator = None
+    except ValueError as error:
+        logger.error("Invalid argument provided to DeepLClient.")
+        logger.error(f"\t{error}")
+        translator = None
+    except OSError as error:
+        logger.error("System/network error occurred while connecting to DeepL API.")
+        logger.error(f"\t{error}")
+        translator = None
 
-          # setup the individual (non-global) log file
-          try:
-            fileHandler = logging.FileHandler(logFile)
-            fileHandler.setLevel(logging.DEBUG)
-            fileHandler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)7s - %(message)s'))
-            logger.addHandler(fileHandler)
-          except Exception as error:
-            fileHandler = None # assign the None value if fileHandler failed
-            logger.warning(f"Unable to write to individual log file!")
-            logger.warning(f"\tIndividual Log file: {logFile}")
-            logger.warning(f"\t{error}")
-
-          # report start of processing
-          logger.info(f'Processing file: {os.path.join(inputDir, filename_orig)}') # note the usage on the un-cleaned file name for this log entry
-
-          # rename if we need the filename to be made safe/clean (if same name, exits the subroutine early)
-          renameToSafeFilename(inputDir, filename_orig, filename)
-
-          # translate the document
-          if (os.path.exists(inputFile) and allowFileTranslation):
-            translateDocument(inputFile, tmpFile, targetLang)
-          
-          # append the translated PDF to the original PDF and put in outputDir
-          if os.path.exists(tmpFile):
-            appendPDFs(inputFile, tmpFile, outputFile)
-          else:
-            logger.warning(f"Temporary file does not exist: {tmpFile}")
-
-          # clean up the old files, make sure that inputFiles aren't re-translated at another date
-          if (os.path.exists(outputFile) and allowFileDeletion): # if we successfully created the outputFile
-            deleteFile(tmpFile)
-            deleteFile(inputFile)
-
-          logger.info(f'Finished processing file.')
-          time.sleep(10) # Delay for X seconds to prevent pounding on the server & settling of the files.
-          # getUsage() # annoyingly DeepL doesn't update their usage quickly.  So, this line got  removed as worthless.
-          try:
-            if not (fileHandler is None):
-              logger.removeHandler(fileHandler) # close the log before moving on to the next file
-          except Exception as error:
-            logger.debug(f"Unable to close individual log file.  (Probably never opened in the 1st place.)")
-            logger.debug(f"\tIndividual Log file: {logFile}")
-            logger.debug(f"\t{error}")
-            
-          if allowToExitWithoutLoop:
-            exitProgram("Exiting program due to allowToExitWithoutLoop variable being set to True.")
-          else:
-            time.sleep(20) # Delay for X seconds to prevent pounding on the server.
-
-        logger.info(f'----------------------------------------') # added separator line to global log
-        continue # move to next file
-      else:
-        continue # move to next file
-  # Delay for X minutes until checking the directory again ... and again ... and again.
-  if not wasQuotaExceeded: # skip the delay if we're just going to delay for a much longer period due to exceeding the usage allowance
-    sleepWithACountdown(checkPeriodSec)
-      
-# #####################################
-# To Do
-# #####################################
-# * support all DeepL file-types
-#   * not sure what do with files that can't be appended
-# * auto-rotate PDF files (maybe better as a separate script, so it can handle non-translated PDFs too)
-
-      
-# #####################################
-# Version history
-# #####################################
-# v1.0 2023-03-13
-#    * Basic functionality
-#
-# v2.0 2023-03-17
-#    * added main While loop
-#    * improved logging, error handling, and basic functioning.
-#
-# v2.1.0 2023-03-18
-#    * various edits to make compatible with Docker and polish
-#
-# v2.1.1 2023-03-24
-#    * translateDocument(): added better parsing of the error message
-#    * during initial usage check now checks if you have "some" quota but not enough to actually do anything.
-#    * added numbOfSecsTillRenewal()
-#    * added ENV{AM_I_IN_A_DOCKER_CONTAINER} to set variables depending on the Docker state
-#
-# v2.1.2 2023-05-03
-#    * reportResults(): started to mess around with a nice summary report, but didn't get very far# * numbOfSecsTillRenewal():
-#    * getSafeFilename(): filter ¢ symbol that occurs when eboks puts things in zip files 
-#    * getSafeFilename(): convert whitespace to a single space 
-#    * line 446 / directory RW check: realized that due to safe filename renaming you did need to write to inputDir
-#    * removed usage checking mid-directory parsing.  Each document costs 50,000 characters regardless of size.
-#    * numbOfSecsTillRenewal():  Fixed a bug where the program waited over 30 days if the usage ran out in the same month but before the renewal date
-#    * numbOfSecsTillRenewal():  moved the default value into the function call.
-#    * sleepWithACountdown(): removed some logging to tighten up the log file
-#    * translateDocument(): added exception for deepl.exceptions.QuotaExceededException  & in the main while loop added logger feedback for usage.limit_reached
-#
-# v2.1.3 2023-08-21
-#    * more tweaks of the log reporting
-#    * for file in os.listdir(os.fsencode(inputDir)):  added if wasQuotaExceeded: check to skip over any files after the quota is exceeded.  I used to think the quota usage was based on char count not a fixed 50k per file.  So, originally I let the smaller files keep trying.
-#    * getSafeFilename(): fixed a typo in the RegEx
-#    * to_bool(): Added this to clean up str->bool conversions
-#    * removeBlankPDFPages():  Added to remove blank pages on the translation before appending
-#    * appendPDFs(): now supports putting either the translated or original file first
-#    * appendPDFs(): switched from PdfMerge to PdfWriter
-#    * allow(*) variables created to turn off various features when running outside of Docker
-#
-# v2.2.0 2023-08-25
-#    * updated to now translate the filename
-#    * updated the DockerFile to (a) install Node.js, and (b) include the dev libraries to compile the cryptography package
-#    * now imports translators (which causes the changes to the DockerFile) to do web page based translation on small text
-#    * now imports langdetect to do a passable job of language detection for a nice output for the log
-#    * getTranslatedFilename(): added.  Goes to a web page and translates the filename.  It does not expend DeepL quota, which makes it more breakable if the web site changes.
-#    * renameToSafeFilename(): updated to print out a line if a rename wasn't needed.
-#    * TRANSLATE_FILENAME:  added as ENV variable
-#    * filename_orig: lines 645, 661, 678, 681 preserves the original filename and replaces multiple calls to os.fsdecode(file)
-#    * tweaked the sleep() command to speed up non-Docker testing
-#
-# v2.2.0d 2025-02-06
-#    * updated requirements.txt to include latest translators
+    return translator
 
 
+def process_file(file_path: Union[str, Path], cfg: Config, translator: Optional[deepl.DeepLClient]) -> bool:
+    """
+    Process a single file for translation.
+
+    Args:
+        file_path (Union[str, Path]): Path to the input file.
+        cfg (Config): Configuration object.
+        translator (deepl.DeepLClient): DeepL translator client.
+
+    Returns:
+        bool: True if processing and translation succeeded, False otherwise.
+    """
+
+    # ----------------------------------------------------
+    # Setup all variables and logfile
+
+    # make sure this is a Path object
+    file_path = Path(file_path)
+
+    # establish individual log file
+    file_handler, log_file_path = add_file_logger(cfg.log_dir, file_path.name)
+    # report start of processing
+    logger.debug(f"{'-'*75}")
+    logger.info(f'Processing file: {file_path}') # note the usage on the un-cleaned file name for this log entry
+    logger.debug(f"{'-'*75}")
+
+    # create variables for all the files
+    file_paths = generate_file_path_vars(file_path, cfg)
+    if file_paths is None:
+        return False # indicate failure to process the file
+    # to be honest it is easiest to pass them around as a tuple.
+    input_file_path, tmp_file_path, output_file_path = file_paths
+    result = False
+
+    # ----------------------------------------------------
+    # Perform translation
+
+    try:
+        if input_file_path.exists():
+            # translate the document
+            if translator is None:
+                logger.error("Translator object is None, cannot proceed with translation.")
+            else:
+                if file_handler is not None:
+                    saved_level = file_handler.level
+                    file_handler.setLevel(logging.DEBUG) # turn of DEBUG logging to see the DeepL HTTP traffic
+                result = send_document_to_server(input_file_path, tmp_file_path, cfg.target_lang, translator)
+                if file_handler is not None:
+                    file_handler.setLevel(saved_level)
+        else:
+            logger.error(f"Input file does not exist: {input_file_path}")
+            return False
+
+        # append the translated PDF to the original PDF and put in outputDir
+        if os.path.exists(tmp_file_path):
+            result = append_pdfs(input_file_path, tmp_file_path, output_file_path, cfg.put_original_first)
+        else:
+            logger.warning(f"Temporary file does not exist: {tmp_file_path}")
+            result = False
+
+    except PermissionError as e:
+        print(f"Permission denied when accessing path")
+        print(f"Permission error: {e}")
+        return False
+    except OSError as e:
+        print(f"OS error: {e}")
+        return False
+    # QuotaExceededException may be passed up from send_document_to_server() and passed through to the calling subroutine to handle
+    # getUsage() # annoyingly DeepL doesn't update their usage quickly.  So, this line got  removed as worthless.
+
+    # ----------------------------------------------------
+    # Delete tmp files and close log file
+
+    # clean up the old files, make sure that input_file_path aren't re-translated at another date
+    if output_file_path.exists(): # if we successfully created the output_file_path
+        delete_file(tmp_file_path)
+        delete_file(input_file_path)  # may be the translated file in the tmp directory
+        if file_path.exists():
+            delete_file(file_path)        # may be the original file in the input directory
+
+    logger.info(f'Finished processing file.')
+
+    # close the individual log file
+    close_file_logger(file_handler, log_file_path)
+
+    return result
+
+
+def generate_file_path_vars(file_path: Union[str, Path], cfg: Config) -> Optional[Tuple[Path, Path, Path]]:
+    """
+    Generate input, temporary, and output file paths for translation.
+
+    Args:
+        file_path (Union[str, Path]): Original file path.
+        cfg (Config): Configuration object.
+
+    Returns:
+        Optional[Tuple[Path, Path, Path]]: Tuple of (input, tmp, output) paths, or None if failure.
+    """
+
+    # make sure this is a Path object
+    file_path = Path(file_path)
+
+    # ------------------------------------------------------------
+    # Setup the file paths (input, tmp, output, logging, etc.)
+
+    # Clean the filename (if needed)
+    input_file_path = get_clean_input_file(file_path, cfg.tmp_dir)
+    if input_file_path is None:
+        logger.error(f"Failed to process file due to input filename issues: {file_path}")
+        return None  # indicate failure
+
+    # create variables for all the files
+    tmp_file_path = create_tmp_file_path(input_file_path, cfg.tmp_dir)
+    if cfg.translate_filename:
+        target_lang_google = deepl_to_google_code(cfg.target_lang)
+        if target_lang_google is not None:
+            translated_basename = translate_string(file_path.stem, target_lang_google)
+            extension = file_path.suffix or ""  # note: suffix includes the dot
+            output_file_path = cfg.output_dir / f"{translated_basename}{extension}"
+        else:
+            # well, I guess it isn't getting translated then
+            output_file_path = cfg.output_dir / input_file_path.name
+    else:
+        output_file_path = cfg.output_dir / input_file_path.name
+
+    logger.debug(f"{'-'*40}")
+    logger.debug(f"Input file path:     {input_file_path}")
+    logger.debug(f"Temporary file path: {tmp_file_path}")
+    logger.debug(f"Output file path:    {output_file_path}")
+    logger.debug(f"{'-'*40}")
+
+    return input_file_path, tmp_file_path, output_file_path
+
+
+def get_clean_input_file(file: Union[str, Path], tmp_dir: Path) -> Optional[Path]:
+    """
+    Clean the input filename and copy to tmp_dir if needed.
+
+    Args:
+        file (Union[str, Path]): Input file path.
+        tmp_dir (Path): Temporary directory.
+
+    Returns:
+        Optional[Path]: Path to cleaned file, or None if failure.
+    """
+
+    try:
+        clean_name = clean_filename(file)
+        file_path = Path(file)
+        if clean_name != file_path.name:
+            # need to copy to tmp_dir with cleaned name
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            file_path = tmp_dir / clean_name
+            shutil.copy2(file, file_path)
+            logger.info(f"Renamed input file to safe filename: {file_path}")
+            return file_path
+        else:
+            return file_path
+    except (OSError, PermissionError, FilenameCleanseError) as e:
+        logger.error(f"Failed to rename input file to safe filename: {file_path.name}")
+        logger.error(f"\t{e}")
+        return None  # return None if failure
+
+
+def clean_filename(file: Union[str, Path]) -> str:
+    """
+    Sanitize a filename to contain only safe (non-unicode or whitespace) characters.
+
+    Args:
+        file (Union[str, Path]): Input file path.
+
+    Returns:
+        str: Cleaned filename string.
+
+    Raises:
+        FilenameCleanseError: If filename cannot be cleaned.
+    """
+
+    # Set here the valid chars (note the lack of <space> as a valid char)
+    safechars = string.ascii_letters + string.digits + "-_."
+
+    # convert to Path (if not already)
+    file_path = Path(file)
+    # base stem and suffix
+    basename = file_path.stem.strip()
+    extension = file_path.suffix or ""
+    name = basename + extension
+
+    # normalize whitespace -> single space, then convert to underscores
+    name = re.sub(r"\s+", " ", name)
+    name = name.replace(" ", "_")
+
+    # a few manual replacements before transliteration
+    name = name.replace("Å", "Aa")
+    name = name.replace("å", "aa")
+    name = name.replace("¢", "ø")
+
+    # transliterate non-ASCII to ASCII where possible
+    name = unidecode(name)
+
+    # now brutally remove any non-ASCII, un-allowed characters
+    filtered_list = list(filter(lambda c: c in safechars, name))
+    filtered_str = ''.join(filtered_list)
+
+    # fallback name if everything was stripped away
+    if not filtered_str or (filtered_str in (".", "..", "")):
+        raise FilenameCleanseError(f"Filename '{file_path}' could not be cleaned to a safe name.")
+
+    return filtered_str
+
+
+def create_tmp_file_path(input_file: Union[str, Path], tmp_dir: Path) -> Path:
+    """
+    Create a temporary file path in tmp_dir with the same approximate name as input_file.
+
+    Args:
+        input_file (Union[str, Path]): Input file path.
+        tmp_dir (Path): Temporary directory.
+
+    Returns:
+        Path: Path to temporary file.
+    """
+    input_path = Path(input_file)
+
+    # create a timestamp safe for filenames (no colons)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    basename = Path(input_path).stem
+    extension = input_path.suffix or ""  # note: suffix includes the dot
+    tmp_file_path = tmp_dir / f"{basename}_{timestamp}{extension}"
+    tmp_file_path = tmp_dir / f"{basename}_ZZZ{extension}"
+
+
+    return tmp_file_path
+
+
+def deepl_to_google_code(deepl_code: str) -> Optional[str]:
+    """
+    Convert a DeepL language code to a GoogleTranslator code.
+
+    Args:
+        deepl_code (str): DeepL language code.
+
+    Returns:
+        Optional[str]: Corresponding GoogleTranslator code, or None if unsupported.
+    """
+
+    deepl_code_clean = get_valid_deepl_target_lang(deepl_code)
+
+    if deepl_code_clean is None:
+        return None
+
+    # Special cases
+    exceptions = {
+        "ZH": "zh-cn",
+        "NB": "no",
+        "PT-BR": "pt",
+        "PT-PT": "pt",
+        "EN-US": "en",
+        "EN-GB": "en",
+    }
+    if deepl_code_clean in exceptions:
+        return exceptions[deepl_code_clean]
+    # Default rule: first two letters, lowercase
+    return deepl_code_clean[:2].lower()
+
+
+def translate_string(orig_string: str, target_lang_short: str) -> str:
+    """
+    Translate a string using GoogleTranslator.
+
+    Args:
+        orig_string (str): Original string (underscores treated as spaces).
+        target_lang_short (str): Target language code for GoogleTranslator.
+
+    Returns:
+        str: Translated string with underscores instead of spaces.
+    """
+
+    # target_lang_short = target_lang.split("-")[0].lower()  # e.g., "EN-US" -> "EN" (or targetLang[0:2].lower())
+    # target_lang_short = target_lang[0:2].lower() # + '-' + target_lang[3:5]
+
+    spaced_string = orig_string.replace("_", " ")
+    try:
+        translated = GoogleTranslator(source='auto', target=target_lang_short).translate(text=spaced_string)
+        return translated.replace(" ", "_")
+    except (deep_translator.exceptions.RequestError,
+            deep_translator.exceptions.TooManyRequests,
+            deep_translator.exceptions.TranslationNotFound) as error:
+        logger.debug(f"deep-translator(Google) failed: {error}")
+        return orig_string
+
+
+def send_document_to_server(source_file: Union[str, Path], result_file: Union[str, Path], target_language: str, translator: deepl.DeepLClient) -> bool:
+    """
+    Upload a document to DeepL for translation.
+
+    Args:
+        source_file (Union[str, Path]): Path to source file.
+        result_file (Union[str, Path]): Path to output file.
+        target_language (str): Target language code.
+        translator (deepl.DeepLClient): DeepL translator client.
+
+    Returns:
+        bool: True if translation succeeded, False otherwise.
+    """
+
+    # Translate a formal document
+    # originally copied from https://github.com/DeepLcom/deepl-python#translating-documents
+
+    source_path = Path(source_file)
+    result_path = Path(result_file)
+
+    logger.info(f'Uploading file to DeepL web API translation service.')
+    logger.debug(f"\tinput document:  {source_path}")
+    logger.debug(f"\toutput document: {result_path}")
+    logger.debug(f"\ttarget language: {target_language}")
+
+    result = False
+    # QuotaExceededException  # annoyingly DeepL doesn't update their usage quickly.  So, we need to monitor and bubble up the error
+    try:
+        # Using translate_document_from_filepath() with file paths
+        if not DEBUG_NO_SEND_FILE:
+            document_status = translator.translate_document_from_filepath(
+                                                            source_path,
+                                                            result_path,
+                                                            target_lang=target_language,
+                                                            formality="prefer_more"
+                                                            )
+            result = document_status.ok
+        else:
+            # in debug mode, we skip sending the file to DeepL
+            try:
+                shutil.copy2(source_path, result_path)  # preserves metadata
+                result = True
+            except (FileNotFoundError, PermissionError, OSError) as error:
+                result = False
+                logger.error(f"\tOS error while copying {source_path} to {result_path}")
+                logger.error(f"\tError: {error}")
+        logger.info(f'Translation complete!')
+
+    except deepl.DocumentTranslationException as error:
+        # If an error occurs during document translation after the document was
+        # already uploaded, a DocumentTranslationException is raised. The
+        # document_handle property contains the document handle that may be used to
+        # later retrieve the document from the server, or contact DeepL support.
+        logger.error(f"Error after uploading to translation API.")
+        # get various pieces of data from the error
+        errorType = type(error)                     # here it'll only return DocumentTranslationException, but originally it was in the just Exception section
+        docHNDL = str(error.document_handle)        # pull out the document ID & Key, in case the user needs to use them outside this script.
+        tmpStr = ', document handle: ' + docHNDL
+        errMsg = str(error).replace(tmpStr, '.')    # DocumentTranslationException doesn't have a `message` attribute, so we'll make one
+        logger.error(f"\t{errMsg}")
+        p = re.compile(r'Document ID:\s+(\w+), key:\s+(\w+)')  # finish pulling the ID and key
+        m = p.match(docHNDL)
+        if m is not None:
+            docID = m.group(1)
+            docKey = m.group(2)
+            logger.error(f"\tDocument ID:  {docID}")
+            logger.error(f"\tDocument Key: {docKey}")
+        if error.document_handle is not None:
+            doc_id = error.document_handle.document_id
+            doc_key = error.document_handle.document_key
+            logger.error(f"\tDocument ID2:  {doc_id}")
+            logger.error(f"\tDocument Key2: {doc_key}")
+
+        result = False
+        # the error was that the quota was not empty, but still too low to perform the document translation (i.e., it didn't raise a QuotaExceededException, but it is still the same issue)
+        if errMsg == "Quota for this billing period has been exceeded.": # note having to add the `.` because we added it in replace() above
+            raise QuotaExceededException(error) from error # send this up the subroutine chain
+    except deepl.exceptions.QuotaExceededException as error:
+        logger.error("The quota for this billing period has been exceeded.")
+        logger.error(f"{error}")
+        result = False
+        raise QuotaExceededException(error) from error # send this up the subroutine chain
+    except Exception as error:
+        # Errors during upload raise a DeepLException
+        logger.error("Unexpected error occurred during the translation process.")
+        errorType = type(error)
+        logger.debug(f"{errorType}")
+        logger.error(f"{error}")
+
+    return result
+
+
+def append_pdfs(original_pdf: Path, translated_pdf: Path, output_pdf: Path, put_original_first: bool) -> bool:
+    """
+    Merge two PDF files (original and translated) into a single output PDF.
+
+    Args:
+        original_pdf (Path): Path to the original PDF file.
+        translated_pdf (Path): Path to the translated PDF file.
+        output_pdf (Path): Destination path for the merged PDF file.
+        put_original_first (bool): If True, the original PDF is placed before the translated PDF.
+                                   If False, the translated PDF is placed before the original.
+
+    Returns:
+        bool: True if the merge was successful, False otherwise.
+    """
+    writer = PdfWriter()
+
+    logger.info('Appending the translated PDF and the original PDF together.')
+    try:
+        if put_original_first:
+            writer.append(original_pdf, "Original", None, True)
+            writer.append(translated_pdf, "Translation", None, True)
+        else:
+            writer.append(translated_pdf, "Translation", None, True)
+            writer.append(original_pdf, "Original", None, True)
+
+        writer.write(output_pdf)
+        writer.close()
+        logger.info('\tPDF merger successful.')
+        return True
+    except (FileNotFoundError, PermissionError, OSError, PdfReadError, ValueError, RuntimeError) as error:
+        writer.close()
+        logger.error("Unknown error occurred during the PDF merging process.")
+        logger.error(f"{error}")
+        return False
+
+
+def num_seconds_till_renewal(renewal_date: int, default_days: int = 7) -> int:
+    """
+    Calculate seconds until next renewal of usage allowance.
+
+    Args:
+        renewal_date (int): Day of month usage renews (1-31).
+        default_days (int): Default wait time in days if renewal_date is invalid.
+
+    Returns:
+        int: Number of seconds until next renewal.
+    """
+    # Default wait time
+    wait_seconds = default_days * 24 * 60 * 60
+
+    # Get configured renewal day (1-31)
+    logger.debug(f"\tnum_seconds_till_renewal() debug output ...")
+    logger.debug(f"\tusageRenewalDay: {renewal_date}")
+
+    if 1 <= renewal_date <= 31:
+        now = pendulum.now()
+        # Construct this month's renewal date
+        renewal_this_month = pendulum.datetime(now.year, now.month, renewal_date, tz=now.tz)
+
+        # If renewal day already passed, schedule next month
+        if renewal_this_month <= now:
+            renewal_this_month = renewal_this_month.add(months=1)
+
+        # Add 1 day buffer to avoid timezone mismatch corner cases
+        next_renewal = renewal_this_month.add(days=1)
+
+        duration = next_renewal - now
+        wait_seconds = int(duration.total_seconds())
+
+        logger.debug(f"\tnow = {now}")
+        logger.debug(f"\tnextRenewal = {next_renewal}")
+        logger.debug(f"\tduration = {duration}")
+        logger.debug(f"\twait_seconds = {wait_seconds}")
+
+    return wait_seconds
+
+
+def sleep_with_progressbar_countdown(fh: logging.FileHandler, secs: int, steps: int = 80, graduations: int = 4, use_time_labels: bool = True, use_percent_labels: bool = True) -> None:
+    """
+    Sleep with a countdown progress bar written directly to a logfile.
+
+    Args:
+        fh (logging.FileHandler): File handler to write progress bar.
+        secs (int): Total sleep duration in seconds.
+        steps (int): Number of progress bar steps.
+        graduations (int): Number of graduation markers.
+        use_time_labels (bool): Whether to show time remaining labels.
+        use_percent_labels (bool): Whether to show percentage remaining.
+    """
+    logger.info(f"Sleeping for {format_timespan(secs)} (countdown mode).")
+
+    # Build scale line with countdown graduations
+    if use_time_labels:
+        scale = ["|"]
+        for i in range(1, graduations):
+            pos = int(i * (steps - 2) / graduations)
+            # Show time remaining markers
+            label = format_timespan(int(secs * (graduations - i) / graduations))
+            scale.append(label.rjust(pos - len("".join(scale)), "-"))
+        scale_line = "".join(scale) + "|"
+        fh.stream.write(scale_line + "\n")
+        fh.stream.flush()
+
+    # Build scale line with countdown graduations
+    if use_percent_labels:
+        scale = ["|"]
+        for i in range(1, graduations):
+            pos = int(i * (steps - 2) / graduations)
+            # Show percentage remaining
+            label = f"{int((graduations - i) * 100 / graduations)}%"
+            scale.append(label.rjust(pos - len("".join(scale)), "-"))
+        scale_line = "".join(scale) + "|"
+        fh.stream.write(scale_line + "\n")
+        fh.stream.flush()
+
+    # Progress bar line
+    fh.stream.write("[")
+    fh.stream.flush()
+
+    interval = secs / (steps - 2)
+    for i in range(steps - 2):
+        time.sleep(interval)
+        fh.stream.write("#")
+        fh.stream.flush()
+
+    fh.stream.write("]\n")
+    fh.stream.flush()
+    # logger.info("Countdown finished.")
+
+    return
+
+
+# -----------------------------------------------------------------------
+# Helper Functions
+# -----------------------------------------------------------------------
+def to_any(to_type: Callable, value: Any, default_value: Any) -> Any:
+    """
+    Convert value to specified type with error handling.
+
+    Args:
+        to_type (Callable): Target type constructor.
+        value (Any): Value to convert.
+        default_value (Any): Fallback if conversion fails.
+
+    Returns:
+        Any: Converted value or default.
+    """
+    try:
+        if to_type is bool:
+            # Delegate to custom boolean parser
+            return to_bool(value, default_value)
+        elif value is None:
+            return to_type(default_value)
+        return to_type(value)
+    except (ValueError, TypeError):
+        return to_type(default_value)
+
+
+def to_bool(value: Any, default_value: bool) -> bool:
+    """Convert arbitrary value to boolean with fallback default."""
+
+    if isinstance(value, bool):
+        return value
+    elif value is None:
+        return default_value
+    elif isinstance(value, int) or isinstance(value, float):
+        if value != 0:
+            return True
+        else:
+            return False
+    elif isinstance(value, str):
+        if value.lower() in ("yes", "y", "true",  "t", "1", "1.0"):
+            return True
+        elif value.lower() in ("no",  "n", "false", "f", "0", "0.0", "", "none", "[]", "{}"):
+            return False
+        else:
+            return default_value
+    else:
+        return default_value
+
+
+def to_int(value: Any, default_value: int) -> int:
+    """Convert arbitrary value to int with fallback default."""
+    return to_any(int, value, default_value)
+
+
+def to_float(value: Any, default_value: float) -> float:
+    """Convert arbitrary value to float with fallback default."""
+    return to_any(float, value, default_value)
+
+
+def to_str(value: Any, default_value: Union[Path,str]) -> str:
+    """Convert arbitrary value to string with fallback default."""
+    return to_any(str, value, default_value)
+
+
+def is_in_container() -> bool:
+    """
+    Detect whether the current process is running inside a Linux container.
+
+    The function checks:
+      1. Presence of Docker's marker file (`/.dockerenv`).
+      2. The `container` environment variable (used by LXC, systemd-nspawn, etc.).
+      3. Contents of `/proc/1/cgroup` for known container runtime patterns.
+
+    Returns:
+        bool: True if the process appears to be running inside a container,
+              False otherwise.
+    """
+    result = {
+        "in_container": False,
+        "runtime": None,
+        "detail": None
+    }
+
+    # Check for Docker's marker file
+    if os.path.exists("/.dockerenv"):
+        result.update({"in_container": True, "runtime": "docker"})
+        # return result
+        return result["in_container"]
+
+    # Check environment variable (common in LXC, systemd-nspawn, etc.)
+    env_container = os.environ.get("container", "").lower()
+    if env_container:
+        result.update({"in_container": True, "runtime": env_container})
+        return result["in_container"]
+
+    # Parse /proc/1/cgroup for runtime-specific patterns
+    try:
+        with open("/proc/1/cgroup", "r", encoding="utf-8") as f:
+            content = f.read()
+    except (FileNotFoundError, PermissionError, OSError):
+        return result["in_container"]  # cannot determine, assume not containerized
+
+    # Map keywords to runtime names
+    patterns = {
+        "docker": "docker",
+        "libpod": "podman",
+        "kubepods": "kubernetes",
+        "lxc": "lxc",
+        "crio": "crio",
+        "containerd": "containerd",
+        "machine.slice": "systemd-nspawn"
+    }
+
+    for key, runtime in patterns.items():
+        if key in content:
+            result.update({
+                "in_container": True,
+                "runtime": runtime,
+                "detail": content.strip()
+            })
+            return result["in_container"]
+
+    # No known container keywords found
+    return result["in_container"]
+
+
+def arg_or_env(arg: Optional[str], env_name: str) -> Optional[str]:
+    """
+    Return CLI argument if provided, otherwise environment variable.
+
+    Args:
+        arg: CLI argument value.
+        env_name (str): Environment variable name.
+
+    Returns:
+        str|None: Value from argument or environment.
+    """
+    env_val = os.getenv(env_name)
+    logger.debug(f"arg_or_env: arg={arg!r:<25}, env_name={env_name:<30}, env_val={env_val}")  # Debug print
+    if arg is not None:
+        return arg
+    elif env_val is not None:
+        return env_val
+    else:
+        return None
+
+
+def debug_dump(obj: Any, name="Object") -> None:
+    """
+    Dump object attributes or dict contents to debug log.
+
+    Args:
+        obj (Any): Object or dict to dump.
+        name (str): Label for the dump.
+    """
+    logger.debug(f"\nDebug Dump: {name}")
+    logger.debug("-" * 40)
+
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            logger.debug(f"{key:<20}: {value!r}")
+    elif hasattr(obj, "__dict__"):
+        for key, value in vars(obj).items():
+            logger.debug(f"{key:<20}: {value!r}")
+    else:
+        logger.debug(f"(Unsupported type: {type(obj).__name__})")
+        logger.debug(repr(obj))
+
+    logger.debug("-" * 40 + "\n")
+
+
+def delete_file(filename: Union[str, Path]) -> bool:
+    """
+    Delete a file with error checking.
+
+    Args:
+        filename (Union[str, Path]): Path to the file.
+
+    Returns:
+        bool: True if deleted or did not exist, False if error occurred.
+    """
+
+    # make sure this is a Path object
+    file_path = Path(filename)
+
+    logger.info(f"Attempting to delete file:")
+    logger.info(f"\t{file_path}")
+
+    if file_path.exists():
+        try:
+            file_path.unlink(missing_ok=True)
+            logger.info(f"\tFile successfully deleted.")
+            return True
+        except (PermissionError, OSError, ValueError) as error:
+            logger.warning(f"\tError while trying to delete file: {file_path}")
+            logger.warning(f"\tError: {error}")
+            return False
+    else:
+        logger.warning(f"\tFile did not exist in the first place. Nothing to do.")
+        return True
+
+
+
+
+
+# def send_notification(cfg: Config, title: str, body: str):
+#     logging.debug("send_notification called")
+#     if not cfg.notify_urls:
+#         logging.debug("No notify URLs configured; skipping notification.")
+#         return
+
+#     if not APPRISE_AVAILABLE:
+#         logging.warning("Apprise not installed; cannot send notifications. Install 'apprise' to enable notifications.")
+#         return
+
+#     try:
+#         a = apprise.Apprise()
+#         for url in cfg.notify_urls:
+#             a.add(url)
+#         a.notify(title=title, body=body)
+#         logging.info("Notification sent.")
+#     except Exception as e:
+#         logging.exception("Failed to send notification: %s", e)
+
+
+# -----------------------------------------------------------------------
+# -----------------------------------------------------------------------
+if __name__ == "__main__":
+    main()
 
