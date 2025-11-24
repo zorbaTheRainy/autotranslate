@@ -10,8 +10,12 @@ services:
       # - DEEPL_TARGET_LANG=EN-US                                           # (near mandatory)  The language isn't really changeable on the fly.  Assumes you want all your files translated to a common language
       # - DEEPL_USAGE_RENEWAL_DAY=1                                         # (optional) If you put the day of the month your DeepL allowance resets, then the expired usage sleeping will be more accurate.  Otherwise, it just waits 7 days before trying again.
       # - CHECK_EVERY_X_MINUTES=15                                          # (optional) How often you want the inputDir scanned for new files
+      # - ORIGINAL_BEFORE_TRANSLATION=0                                     # (optional) Should the original be prepended or appended to the translated PDF?
+      # - TRANSLATE_FILENAME=1                                              # (optional) Should the filename of the PDF be translated?
+      # - NOTIFY_URLS='mailtos://example.com:12522?user=user1@example.com&pass=pass123&smtp=mail.example.com&from=joe@example.com&to=bob@example.com,jane@yahoo.ca&mode=ssl'
+                                                                            # (optional) Apprise-style comma separated list of URLs to notify when errors or the final translation occurs.
     volumes:
       - /etc/localtime:/etc/localtime:ro                                    # (optional) sync to host time
       - /volume1/translate/:/inputDir                                       # (mandatory) The directory where you put the un-translated file
       - /volume1/consume/:/outputDir
-      - /volume1/autotranslate_logs/:/logDir
+      - /volume1/translate/autotranslate_logs/:/logDir

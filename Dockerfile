@@ -1,4 +1,4 @@
-ARG PYTHON_VERSION=3.13
+ARG PYTHON_VERSION=3.14
 ARG BUILD_TIME
 
 FROM python:${PYTHON_VERSION}-alpine
@@ -13,30 +13,15 @@ WORKDIR /app
 # ENV DEEPL_TARGET_LANG=
 # ENV CHECK_EVERY_X_MINUTES=
 # ENV DEEPL_USAGE_RENEWAL_DAY=
-ENV AM_I_IN_A_DOCKER_CONTAINER=1
+# ENV ORIGINAL_BEFORE_TRANSLATION=
+# ENV TRANSLATE_FILENAME=
+# ENV NOTIFY_URLS=
 
 COPY requirements.txt requirements.txt
 COPY autotranslate.py autotranslate.py
-COPY keep_alive.py keep_alive.py
+COPY version.py version.py
 
-# ---------------------------------
-# What RUN does
-# ---------------------------------
-# 1a. install Node.js for `pip install translators` 
-# 1b. install a bunch of development tools (gcc, etc.) for `pip install translators` because it wants to recompile cryptography # https://stackoverflow.com/questions/35736598/cannot-pip-install-cryptography-in-docker-alpine-linux-3-3-with-openssl-1-0-2g
-# 2. install requirements.txt
-# 3. uninstall all the development tools, as they are no longer needed and take up a lot of space
-# 4. make the needed directories 
-
-RUN apk add --no-cache gcc musl-dev python3-dev libffi-dev libressl-dev  nodejs npm && \
-    pip3 install -r requirements.txt && \
-    apk del gcc musl-dev python3-dev libffi-dev libressl-dev && \
-    mkdir /inputDir /outputDir /logDir /tmpDir
-
-# RUN apt update && \
-#     pip3 install -r requirements.txt && \
-#     mkdir /inputDir /outputDir /logDir /tmpDir
-
-
+RUN pip3 install -r requirements.txt && \
+    mkdir /inputDir /outputDir /logDir
 
 ENTRYPOINT "./autotranslate.py"
