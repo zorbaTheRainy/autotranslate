@@ -95,7 +95,7 @@ class Config:
     # Directory paths
     input_dir:  Path = Path("/inputDir")  # note: if outside a container, this is changed to ./input  in build_config()
     output_dir: Path = Path("/outputDir") # note: if outside a container, this is changed to ./output
-    log_dir:    Path = Path("/logsDir")   # note: if outside a container, this is changed to ./logs
+    log_dir:    Path = Path("/logDir")   # note: if outside a container, this is changed to ./logs
     tmp_dir:    Path = Path("/tmp")       # note: if outside a container, this is changed to /tmp
     # API and server settings
     auth_key:   str = ""
