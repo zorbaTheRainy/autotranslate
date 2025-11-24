@@ -67,8 +67,8 @@ except ImportError:
 logger = logging.getLogger()
 _exit_done = False # for graceful_exit()
 # DEBUG variables
-DEBUG_DUMP_VARS = True  # Set to True to enable config/args debug dump
-DEBUG_NO_SEND_FILE = True  # Set to True to skip sending translated files (for testing)
+DEBUG_DUMP_VARS = False  # Set to True to enable config/args debug dump
+DEBUG_NO_SEND_FILE = False  # Set to True to skip sending translated files (for testing)
 
 
 # -----------------------------------------------------------------------
@@ -482,8 +482,6 @@ def build_config(args: argparse.Namespace) -> Config:
                     logger.debug(f"Apprise, Appending URL: {url}")
                     valid_urls.append(url.strip())
             new_cfg.notify_urls = valid_urls
-            # sleep in order for Apprise to finish all its threads 
-            time.sleep(5)
     else:
         new_cfg.notify_urls = []
 
@@ -540,6 +538,7 @@ def add_global_file_logger(log_dir: Path, log_filename: str = "_autotranslate.lo
     logger.info(f'--- Starting new execution of script ---')
     logger.info(f'---        {timestamp}       ---')
     logger.info(f'----------------------------------------')
+    logger.info(f'')
 
     return g_fh, log_file
 
@@ -611,6 +610,7 @@ def add_apprise_notifications_logger(notify_urls: Optional[List[str]] = None, fl
     if notify_urls is None:
         return None
 
+    logger.info(f"Creating Apprise notifications handler.")
     handler = BufferedAppriseHandler(notify_urls, flush_interval=flush_interval_seconds)
     handler.setFormatter(logging.Formatter('%(message)s'))
     logger.addHandler(handler)
