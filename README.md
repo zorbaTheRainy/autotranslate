@@ -8,11 +8,12 @@ AutoTranslate is a small lightweight application that uses the DeepL API to tran
 - Translates those files via the DeepL API
 - Appends the translation document and original (untranslated) document into a single file
 - Places that final file in an output directory (useful for consumption by programs like Paperless-Ngx)
+- Sends notifications when the file has been translated or an error occurs
 - Generates log files in case of any errors occur
 - If you have exceeded your DeepL API usage for the month, the program will sleep until the next month
 - Authentication (API Key) via Docker ENV variables
 - No web interface
-- CLI interface to handle 1 file at a time
+- CLI interface to handle one file at a time
 
 AutoTranslate doesn't cost any money.  The DeepL API has a free option.  However, the DeepL API has a usage limit (per month) and you can pay extra to DeepL to increase that monthly limit.
 
