@@ -127,13 +127,22 @@ Autotranslate may be used from the command line in one of two modes: single file
 ##### Examples
 
 Translate a single file, and put the output in the `consume` directory:
-`autotranslate.py input.pdf -o ./consume/ -k YOUR_API_KEY`
 
-Run in directory monitor mode, and put the logs in the `/logs` directory, but use the default input and output directories otherwise:
-`autotranslate.py -l /logs -k YOUR_API_KEY`
+``` bash
+autotranslate.py input.pdf -o ./consume/ -k YOUR_API_KEY
+```
+
+Run in directory monitor mode, and put the logs in the `~/logs` directory, but use the default input and output directories otherwise:
+
+``` bash
+autotranslate.py -l ~/logs -k YOUR_API_KEY
+```
 
 Run in directory monitor mode, with th defaults, but with 2 Apprise notification services (gmail and discord)
-`autotranslate.py --k YOUR_API_KEY --notify-urls 'mailto://boo:HisAppPassword@gmail.com,discord://4174216298/JHMHI8qBe7bk2ZwO5U711o3dV_js'`
+
+``` bash
+autotranslate.py --k YOUR_API_KEY --notify-urls 'mailto://boo:HisAppPassword@gmail.com,discord://4174216298/JHMHI8qBe7bk2ZwO5U711o3dV_js'
+```
 
 #### Command Line Arguments (v2.3.0+)
 | Short           | Long             | Overrides ENV  |
@@ -156,7 +165,9 @@ Run in directory monitor mode, with th defaults, but with 2 Apprise notification
 |   | `[file]` | The file you wish to translate.  Puts Autotranslate.py into single-file mode. |
 
 In general, CLI switches override ENV variables.
-Using `--original-before-translation` and `--translate-filename` are the same as setting their ENVs to `1` or `True`
+
+Using `--original-before-translation` and `--translate-filename` are the same as setting their ENVs to `1` or `True`.
+
 `--notify-urls` and the ENV `NOTIFY_URLS` are actually merged.  So, the resultant URL list will be the combination of both values.  However, invalid Apprise URLs are discarded.  
 
 ### Notifications (2.3.0+)
@@ -174,7 +185,7 @@ You can see a complex email example in the Docker compose example above.
 
 Multiple services or URLs can be used by putting a comma after each one.  Again, see the example above.
 
-I **strongly** suggest trying out the desired `NOTIFY_URLS` in either single-file mode or by looking at the console log for Docker, as the error messages for registering the URLs occur before the global file log is fully setup.  (If you're worried about using your DeepL quota, put in a fake API key, and the URLs will be processed but any translation attempts will fail due to an invalid key. Plus you'll then get a notification that your translation failed)
+I **strongly** suggest trying out the desired `NOTIFY_URLS` in either single-file mode or by looking at the container log for Docker, as the error messages for registering the URLs occur before the global file log is fully setup.  (If you're worried about using your DeepL quota, put in a fake API key, and the URLs will be processed but any translation attempts will fail due to an invalid key. Plus you'll then get a notification that your translation failed.)
 
 
 ### Other random quirks you may be interested in
