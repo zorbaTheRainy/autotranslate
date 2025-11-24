@@ -12,6 +12,7 @@ AutoTranslate is a small lightweight application that uses the DeepL API to tran
 - If you have exceeded your DeepL API usage for the month, the program will sleep until the next month
 - Authentication (API Key) via Docker ENV variables
 - No web interface
+- CLI interface to handle 1 file at a time
 
 AutoTranslate doesn't cost any money.  The DeepL API has a free option.  However, the DeepL API has a usage limit (per month) and you can pay extra to DeepL to increase that monthly limit.
 
@@ -43,6 +44,8 @@ If you want to run the Python script outside of Docker, just copy it from [the G
 
 ## Using AutoTranslate
 
+### Docker
+
 The simplest way to use AutoTranslate is to run the docker container. 
 
 Before we get to the Docker instructions, you should make sure everything is set up.
@@ -57,7 +60,7 @@ Once you have created these you are ready for the Docker command.
 
 I use compose.  Conversion of the below into the command line command is "left as an exercise for the reader".
 
-### Sample Docker compose
+#### Sample Docker compose
 
 	---
 	version: "2.1"
@@ -73,6 +76,9 @@ I use compose.  Conversion of the below into the command line command is "left a
 				# - CHECK_EVERY_X_MINUTES=15                                          # (optional) How often you want the inputDir scanned for new files
 				# - ORIGINAL_BEFORE_TRANSLATION=0                                     # (optional) When appending the original and translated files, which should go first?
 				# - TRANSLATE_FILENAME=1                                              # (optional) Should the filename also be translated?
+				# - NOTIFY_URLS='mailtos://example.com:12522?user=user1@example.com&pass=pass123&smtp=mail.example.com&from=joe@example.com&to=bob@example.com'
+                                            # (optional) Apprise-style comma separated list of URLs to notify when errors or the final translation occurs.
+
 			volumes:
 				- /etc/localtime:/etc/localtime:ro                                    # (optional) Sync to host time
 				- /volume1/translate/:/inputDir                                       # (mandatory) The directory where you put the un-translated file
@@ -93,8 +99,12 @@ The only **mandatory** variable is the DEEPL_AUTH_KEY.
 | DEEPL_TARGET_LANG       | EN-US    | The target language to translate the documents into.  The original language will be auto-detected by DeepL.  A list of language codes may be found in [the DeepL API documentation](https://www.deepl.com/docs-api/translate-text) under the `target_lang` parameter. |
 | DEEPL_USAGE_RENEWAL_DAY | 0    | Eventually, you are going to try to translate more documents than you have quota with DeepL.  At this point, the script will stop trying to translate and sleep until your quota is renewed (the start of **your** new month).  This variable tells the script what day of the month your quota will be renewed, and the program can wake-up and resume translating.  For example, if your DeepL subscription renews on the 5th of the month, put "5" in this variable.  If this variable is not set, the program will wake-up every 7 days and see if your quota has been renewed.  Acceptable values are 1-31.  Values outside that range are treated as if the variable was not set. |
 | CHECK_EVERY_X_MINUTES   | 15    | The frequency at which the input directory will be scanned for any new files. |
-| ORIGINAL_BEFORE_TRANSLATION | false    | (> v2.1.3) When appending the original and translated files, which should go first? |
-| TRANSLATE_FILENAME      | true    | (> v2.2.0) Should the filename also be translated?  This is a bit experimental. |
+| ORIGINAL_BEFORE_TRANSLATION | false    | (v2.1.3+) When appending the original and translated files, which should go first? |
+| TRANSLATE_FILENAME      | true    | (v2.2.0+) Should the filename also be translated?  This is a bit experimental. |
+| NOTIFY_URLS      | ""    | (v2.3.0+) A comma separated list of [Apprise formatted URLs](https://github.com/caronc/apprise/wiki). |
+| INPUT_DIR      | "/inputDir/" in a container <br>"./input/" outside a container   | (v2.3.0+) The directory where you put the un-translated PDF files.  Non-PDF files will be ignored. |
+| OUTPUT_DIR      | "/outputDir/" in a container <br>"./output/" outside a container     | (v2.3.0+) The directory where AutoTranslate will put the translated PDF files, which have been appended to the original un-translated file. |
+| LOG_DIR      | "/logDir/" in a container <br>"./logs/" outside a container     | (v2.3.0+) The directory where log files are stored, 1 per input file and a master log file (`_autotranslate.log`). |
 
 #### Volumes
 | Volume           | Purpose             |
@@ -103,15 +113,77 @@ The only **mandatory** variable is the DEEPL_AUTH_KEY.
 | outputDir | The directory where AutoTranslate will put the translated PDF files, which have been appended to the original un-translated file. |
 | logDir | The directory where log files are stored, 1 per input file and a master log file (`_autotranslate.log`). |
 
+### Command Line
+Autotranslate may be used from the command line in one of two modes: single file, or directory monitor.
 
-#### Other random quirks you may be interested in
+**Directory monitor mode** is what is used in the Docker, and Autotranslate.py simply monitors a directory for PDFs, translates them, and provides the translated PDFs.
+
+**Single file mode** is what is used when you want to translate one PDF file.  You provide the filename as input and it will translate it and put it in the output directory.
+
+#### Usage
+	usage: autotranslate.py [-h] [-i INPUT_DIR] [-o OUTPUT_DIR] [-l LOG_DIR] [-k AUTH_KEY] [-s SERVER_URL] [-t TARGET_LANG] [-c CHECK_EVERY_X_MINUTES] [-r RENEWAL_DAY] [-B] [-N] [-u NOTIFY_URLS] [--version]
+							[file]
+
+##### Examples
+
+Translate a single file, and put the output in the `consume` directory:
+`autotranslate.py input.pdf -o ./consume/ -k YOUR_API_KEY`
+
+Run in directory monitor mode, and put the logs in the `/logs` directory, but use the default input and output directories otherwise:
+`autotranslate.py -l /logs -k YOUR_API_KEY`
+
+Run in directory monitor mode, with th defaults, but with 2 Apprise notification services (gmail and discord)
+`autotranslate.py --k YOUR_API_KEY --notify-urls 'mailto://boo:HisAppPassword@gmail.com,discord://4174216298/JHMHI8qBe7bk2ZwO5U711o3dV_js'`
+
+#### Command Line Arguments (v2.3.0+)
+| Short           | Long             | Overrides ENV  |
+| ---------------------- | ------- | ------- |
+| `-i` | `--input-dir` | INPUT_DIR |
+| `-o` | `--output-dir` | OUTPUT_DIR |
+| `-l` | `--log-dir` | LOG_DIR |
+| `-k` | `--auth-key` or `--api-key` | DEEPL_AUTH_KEY |
+| `-t` | `--target-lang` | DEEPL_TARGET_LANG |
+| `-c` | `--check-every-x-minutes` | CHECK_EVERY_X_MINUTES |
+| `-r` | `--renewal-day` | DEEPL_USAGE_RENEWAL_DAY |
+| `-B` | `--original-before-translation` | ORIGINAL_BEFORE_TRANSLATION |
+| `-N` | `--translate-filename` | TRANSLATE_FILENAME |
+| `-u` | `--notify-urls` | NOTIFY_URLS |
+
+| Short           | Long             | Meaning  |
+| ---------------------- | ------- | ------- |
+| `-h` | `--help` | Prints out the usage report |
+|   | `--version` | Prints out the version number |
+|   | `[file]` | The file you wish to translate.  Puts Autotranslate.py into single-file mode. |
+
+In general, CLI switches override ENV variables.
+Using `--original-before-translation` and `--translate-filename` are the same as setting their ENVs to `1` or `True`
+`--notify-urls` and the ENV `NOTIFY_URLS` are actually merged.  So, the resultant URL list will be the combination of both values.  However, invalid Apprise URLs are discarded.  
+
+### Notifications (2.3.0+)
+
+Autotranslate can now send you notifications when things occur, specifically errors or your file being translated.
+The translated file, in addition to being put in the output directory, will now also be sent to you via a notification (if your service supports file attachments, e.g., email).  
+Any error messages (including Docker stops) will be sent to you via a notification.  No more not knowing things have failed silently.  
+
+
+Autotranslate handles notifications via the [Apprise Python library](https://github.com/caronc/apprise), which allows Autotranslate to support 100+ notification systems out-of-the-box!
+
+It will now support email, Discord, Gotify, Ntfy, ITTT, and so many more.  But, ... you have to provide it with a Apprise-style URL (or multiple) in order for it to work (the ENV `NOTIFY_URLS` or CLI switch `--notify-urls`).  
+Please look at [Apprise's documentation](https://github.com/caronc/apprise/wiki) to figure out how to format your desired URLs.  
+You can see a complex email example in the Docker compose example above.
+
+Multiple services or URLs can be used by putting a comma after each one.  Again, see the example above.
+
+I **strongly** suggest trying out the desired `NOTIFY_URLS` in either single-file mode or by looking at the console log for Docker, as the error messages for registering the URLs occur before the global file log is fully setup.  (If you're worried about using your DeepL quota, put in a fake API key, and the URLs will be processed but any translation attempts will fail due to an invalid key. Plus you'll then get a notification that your translation failed)
+
+
+### Other random quirks you may be interested in
 
 - **Filename Cleaning**: Many filenames in non-English languages will not upload well to the API server.  The script will make an attempt to clean-up the filename, removing any troublesome/Unicode characters, and replacing them with ASCII characters instead.  Whitespace is also replaced with underscores.  If the filename is not translated, the output filename will be this cleaned filename.
 - **Filename Translation, the quota**:  In order to not use up the DeepL quota, I used a separate Python library to perform filename translation and language detection.  I could use the DeepL API but each document uses a fixed 50,000 characters and if I use non-document side of the API to translate 30 characters of a filename, you are down from 10 free documents a month to 9 (500,000 - 30 = 499,970, and 499,970/50,000 is 9.9, which is less that 10.  Meaning that 10th document will exceed the quota and DeepL won't translate it.).  This feature will work until the Python library breaks.  But the DeepL API document translation should still work.  You just won't get the nice new filename.
-- **Filename Translation, the translation**:  In order to not use up the DeepL quota, I used a separate Python library to perform filename translation and language detection.  The Python library that does the translation attempts to do it via the standard web page interface, and I wouldn't be surprised if this breaks someday.  Right now I try three web pages (Bing, Google, and DeepL non-API), in that order, until one of them works.   
-- **Filename Translation, language reporting**:  In order to not use up the DeepL quota, I used a separate Python library to perform filename translation and language detection.  The language detection reported by this Python library is not as good as the DeepL API, but is only used for reporting to the log files.  If it is wrong, don't freak out.  DeepL does its own detection on the whole document.  It is just that the Python library isn't very good for something as short as a filename.
-- **Mock DeepL Server**:  If you wish to test how your code functions with the DeepL API, there is a fake/mock server at [DeepLcom/deepl-mock on GitHub](https://github.com/DeepLcom/deepl-mock).  It is very limited, but it lets you test your code (to an extent) without running through your actual DeepL quota.  A pre-built docker image may be found at [thibauddemay/deepl-mock](https://hub.docker.com/r/thibauddemay/deepl-mock).  This was a useful feature in the pre- v2.0.0 version of the script, but it is now deprecated.
-If you wish to use a mock DeepL server use the ENV variable DEEPL_SERVER_URL.  In the Docker compose you would include the following line (adjust "http://localhost:3000" to point to your deepl-mock container.)
+- **Filename Translation, the translation**:  In order to not use up the DeepL quota, I used a separate Python library to perform filename translation and language detection.  The Python library that does the translation attempts to do it via the standard web page interface, and I wouldn't be surprised if this breaks someday.  Right now I try Google.   
+- **Mock DeepL Server**:  If you wish to test how your code functions with the DeepL API, there is a fake/mock server at [DeepLcom/deepl-mock on GitHub](https://github.com/DeepLcom/deepl-mock).  It is very limited, but it lets you test your code (to an extent) without running through your actual DeepL quota.  A pre-built docker image may be found at [thibauddemay/deepl-mock](https://hub.docker.com/r/thibauddemay/deepl-mock).  This was a useful feature in the pre-v2.0.0 version of the script, but it is now deprecated.
+If you wish to use a mock DeepL server use the ENV variable DEEPL_SERVER_URL or `-s`, `--server-url`.  In the Docker compose you would include the following line (adjust "http://localhost:3000" to point to your deepl-mock container.)
 
 		environment:
 			- DEEPL_SERVER_URL=http://localhost:3000                            # (optional) "" (i.e., an empty string) is the actual DeepL server, anything else is for testing 

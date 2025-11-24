@@ -65,7 +65,6 @@ except ImportError:
 # Module-level variables (accessible to all functions in this file)
 # -----------------------------------------------------------------------
 logger = logging.getLogger()
-_exit_done = False # for graceful_exit()
 # DEBUG variables
 DEBUG_DUMP_VARS = False  # Set to True to enable config/args debug dump
 DEBUG_NO_SEND_FILE = False  # Set to True to skip sending translated files (for testing)
@@ -94,10 +93,10 @@ class Config:
         notify_urls: List[str]:  Commas separated list of URLs in Apprise format
     """
     # Directory paths
-    input_dir:  Path = Path("/inputDir")  # note: if outside a container, this is changed to ./folders/input  in build_config()
-    output_dir: Path = Path("/outputDir") # note: if outside a container, this is changed to ./folders/output
-    log_dir:    Path = Path("/logs")      # note: if outside a container, this is changed to ./folders/logs
-    tmp_dir:    Path = Path("/tmp")       # note: if outside a container, this is changed to ./folders/tmp
+    input_dir:  Path = Path("/inputDir")  # note: if outside a container, this is changed to ./input  in build_config()
+    output_dir: Path = Path("/outputDir") # note: if outside a container, this is changed to ./output
+    log_dir:    Path = Path("/logsDir")   # note: if outside a container, this is changed to ./logs
+    tmp_dir:    Path = Path("/tmp")       # note: if outside a container, this is changed to /tmp
     # API and server settings
     auth_key:   str = ""
     server_url: str = ""
@@ -200,7 +199,7 @@ class BufferedAppriseHandler(logging.Handler):
                 body=body,
                 title="Logger Errors"
             )
-        except Exception as e:
+        except RuntimeError as e:
             # Avoid raising during interpreter shutdown
             logging.debug(f"Apprise flush skipped: {e}")
         finally:
@@ -213,7 +212,7 @@ class BufferedAppriseHandler(logging.Handler):
         """
         try:
             self.flush()
-        except Exception:
+        except RuntimeError:
             pass
         super().close()
 
@@ -244,7 +243,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-N", "--translate-filename", dest="translate_filename",
                                         action="store_const", const=True, default=None,
                                         help="If set, modify filename to indicate translation.")
-    parser.add_argument("-a", "--notify-urls", help="Comma-separated Apprise URLs for notifications.")
+    parser.add_argument("-u", "--notify-urls", help="Comma-separated Apprise URLs for notifications.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser.parse_args()
 
@@ -277,7 +276,7 @@ def main() -> None:
     cfg = build_config(args)
 
     # Now setup the global log file (note: log_dir may not exist, fails gracefully)
-    global_file_handler, global_log_path = add_global_file_logger(cfg.log_dir)
+    global_file_handler, _ = add_global_file_logger(cfg.log_dir)
 
     # Setup Apprise notifications on Errors
     if APPRISE_AVAILABLE:
@@ -362,7 +361,7 @@ def main() -> None:
                 time.sleep(check_period_sec)
 
     # close the global log file and any Apprise handlers and exit
-    graceful_exit(0)  
+    graceful_exit(0)
 
 
 
@@ -401,12 +400,19 @@ def setup_logging() -> None:
 
 
 def setup_exit_hooks():
+    """
+    Register cleanup hooks for graceful shutdown.
+
+    Ensures `graceful_exit()` runs on normal interpreter exit (atexit),
+    and on SIGINT (Ctrl-C) or SIGTERM (container stop).
+    """
+
     # Run graceful_exit on normal interpreter shutdown
     atexit.register(graceful_exit, 0)
 
     # Catch Ctrl-C (SIGINT) and container stop (SIGTERM)
-    def handle_signal(signum, frame):
-        logging.error("Program shutting down due to SIGINT or SIGTERM")
+    def handle_signal(signum, _frame):
+        logging.error(f"Program shutting down due to the signal {signum}.")
         graceful_exit(1)
 
     signal.signal(signal.SIGINT, handle_signal)
@@ -434,10 +440,10 @@ def build_config(args: argparse.Namespace) -> Config:
 
     # make some changes if we're running outside a container
     if not is_in_container():
-        default.input_dir   = Path("./folders/input")
-        default.output_dir  = Path("./folders/output")
-        default.log_dir     = Path("./folders/logs")
-        default.tmp_dir     = Path("./folders/tmp")
+        default.input_dir   = Path("./input")
+        default.output_dir  = Path("./output")
+        default.log_dir     = Path("./logs")
+        default.tmp_dir     = Path("/tmp")
 
 
     # Map CLI args and environment variables. CLI overrides env.
@@ -681,7 +687,7 @@ def get_valid_deepl_target_lang(lang_code: str) -> Optional[str]:
         "DA": "Danish",
         "DE": "German",
         "EL": "Greek",
-        "EN": "English",  # unspecified variant for backward compatibility; we recommend usingEN-GB or EN-US instead)
+        "EN": "English",  # unspecified variant for backward compatibility; we recommend using EN-GB or EN-US instead)
         "EN-GB": "English (British)",
         "EN-US": "English (American)",
         "ES": "Spanish",
@@ -909,7 +915,7 @@ def process_file(file_path: Union[str, Path], cfg: Config, translator: Optional[
             delete_file(file_path)        # may be the original file in the input directory
 
     # send the file via Apprise
-    if output_file_path.exists() and APPRISE_AVAILABLE: 
+    if output_file_path.exists() and APPRISE_AVAILABLE:
         send_apprise_message( title='Translated file',
                                 body=f"Translation complete: {output_file_path.name}",
                                 attach=output_file_path)
@@ -1384,17 +1390,16 @@ def graceful_exit(exit_code: int = 0) -> None:
     Ensures Apprise notifications are sent before interpreter shutdown.
     Also, removes global log file handler.
     """
-    global _exit_done
-    if _exit_done:
+    if getattr(graceful_exit, "exit_done", False):
         return
-    _exit_done = True
+    graceful_exit.exit_done = True
 
     for h in logger.handlers[:]:
         try:
             h.flush()
             h.close()
             logger.removeHandler(h)
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.debug(f"Handler cleanup skipped: {e}")
 
     # now exit
