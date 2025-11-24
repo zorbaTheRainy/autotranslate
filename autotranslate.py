@@ -462,6 +462,7 @@ def build_config(args: argparse.Namespace) -> Config:
         combined = []
         for item in notify_urls_args_raw + notify_urls_env_raw:
             if item not in seen:
+                logger.debug(f"Combining URL: {item}")
                 seen.add(item)
                 combined.append(item)
         new_cfg.notify_urls = combined
@@ -472,8 +473,10 @@ def build_config(args: argparse.Namespace) -> Config:
             for url in new_cfg.notify_urls:
                 if not url or not url.strip():
                     continue
+                logger.debug(f"Validating URL: {url}")
                 # Apprise returns True if the URL is valid and supported
                 if apprise.Apprise().add(url.strip()):
+                    logger.debug(f"Appending URL: {url}")
                     valid_urls.append(url.strip())
             new_cfg.notify_urls = valid_urls
     else:
