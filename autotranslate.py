@@ -24,18 +24,20 @@ Features:
 
 # standard libraries
 import argparse                                # https://docs.python.org/3/library/argparse.html
+import atexit                                  # https://docs.python.org/3/library/atexit.html
 import logging                                 # https://docs.python.org/3/library/logging.html
 import logging.handlers                        # https://docs.python.org/3/library/logging.handlers.html
 import os                                      # https://docs.python.org/3/library/os.html
 import re                                      # https://docs.python.org/3/library/re.html
 import shutil                                  # https://docs.python.org/3/library/shutil.html
+import signal                                  # https://docs.python.org/3/library/signal.html
 import string                                  # https://docs.python.org/3/library/string.html
 import sys                                     # https://docs.python.org/3/library/sys.html
 import time                                    # https://docs.python.org/3/library/time.html
-from dataclasses import dataclass              # https://docs.python.org/3/library/dataclasses.html
+from dataclasses import dataclass, field       # https://docs.python.org/3/library/dataclasses.html
 from datetime import datetime                  # https://docs.python.org/3/library/datetime.html
 from pathlib import Path                       # https://docs.python.org/3/library/pathlib.html
-from typing import Optional, Union, Tuple, Dict, Any, Callable   # https://docs.python.org/3/library/typing.html
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union # https://docs.python.org/3/library/typing.html
 
 # non-standard imports
 import deepl                                   # pip install --upgrade deepl   # https://github.com/DeepLcom/deepl-python
@@ -63,6 +65,7 @@ except ImportError:
 # Module-level variables (accessible to all functions in this file)
 # -----------------------------------------------------------------------
 logger = logging.getLogger()
+_exit_done = False # for graceful_exit()
 # DEBUG variables
 DEBUG_DUMP_VARS = True  # Set to True to enable config/args debug dump
 DEBUG_NO_SEND_FILE = True  # Set to True to skip sending translated files (for testing)
@@ -88,6 +91,7 @@ class Config:
         usage_renewal_day (int): Day of month usage renews.
         put_original_first (bool): Whether to place original before translation in merged PDFs.
         translate_filename (bool): Whether to translate filenames.
+        notify_urls: List[str]:  Commas separated list of URLs in Apprise format
     """
     # Directory paths
     input_dir:  Path = Path("/inputDir")  # note: if outside a container, this is changed to ./folders/input  in build_config()
@@ -103,7 +107,7 @@ class Config:
     usage_renewal_day:  int = 0
     put_original_first: bool = False
     translate_filename: bool = False
-    # notify_urls: List[str]
+    notify_urls: List[str] = field(default_factory=list)
 
 class FilenameCleanseError(Exception):
     """Custom exception raised when filename sanitization fails."""
@@ -151,6 +155,67 @@ class SizeBasedFilter(logging.Filter):
             record.args = ()
         return True  # Always allow record through
 
+class BufferedAppriseHandler(logging.Handler):
+    """
+    A logging handler that buffers ERROR-level messages and sends them as a
+    single Apprise notification.
+
+    Args:
+        notify_urls (list[str]): Apprise notification URLs (e.g., Slack, Discord, email).
+        flush_interval (float): Seconds to wait before bundling and sending messages.
+
+    Attributes:
+        buffer (list[str]): Collected log messages.
+        last_flush (float): Timestamp of last flush.
+        apobj (apprise.Apprise): Apprise client used to send notifications.
+
+    Methods:
+        emit(record): Add a log record to the buffer and flush if interval elapsed.
+        flush(): Send buffered messages as one notification and clear the buffer.
+    """
+    def __init__(self, notify_urls, flush_interval=2.0):
+        super().__init__(level=logging.ERROR)
+        self.apobj = apprise.Apprise()
+        for url in notify_urls:
+            self.apobj.add(url)
+        self.buffer = []
+        self.last_flush = time.time()
+        self.flush_interval = flush_interval  # seconds
+
+    def emit(self, record):
+        msg = self.format(record)
+        self.buffer.append(msg)
+
+        # If enough time has passed, flush as one notification
+        if time.time() - self.last_flush >= self.flush_interval:
+            self.flush()
+
+    def flush(self):
+        if not self.buffer:
+            return
+        try:
+            body = "\n".join(self.buffer)
+            # Only notify if Apprise is still usable
+            self.apobj.notify(
+                body=body,
+                title="Logger Errors"
+            )
+        except Exception as e:
+            # Avoid raising during interpreter shutdown
+            logging.debug(f"Apprise flush skipped: {e}")
+        finally:
+            self.buffer.clear()
+            self.last_flush = time.time()
+
+    def close(self):
+        """
+        Ensure buffered messages are flushed safely before shutdown.
+        """
+        try:
+            self.flush()
+        except Exception:
+            pass
+        super().close()
 
 # -----------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
@@ -179,7 +244,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-N", "--translate-filename", dest="translate_filename",
                                         action="store_const", const=True, default=None,
                                         help="If set, modify filename to indicate translation.")
-    # parser.add_argument("-a", "--notify-urls", help="Comma-separated Apprise URLs for notifications.")
+    parser.add_argument("-a", "--notify-urls", help="Comma-separated Apprise URLs for notifications.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser.parse_args()
 
@@ -202,6 +267,9 @@ def main() -> None:
     # init logger, and start output to STDOUT
     setup_logging()
 
+    # Handle normal exits (atexit), and SIGINT/SIGTERM signals
+    setup_exit_hooks()
+
     # read the commandline args and ENVs, setup cfg object
     args = parse_args()
     # Merge ENVs with the args, args taking precedence
@@ -210,6 +278,12 @@ def main() -> None:
 
     # Now setup the global log file (note: log_dir may not exist, fails gracefully)
     global_file_handler, global_log_path = add_global_file_logger(cfg.log_dir)
+
+    # Setup Apprise notifications on Errors
+    if APPRISE_AVAILABLE:
+        add_apprise_notifications_logger(cfg.notify_urls)
+
+    # debug stuff
     if DEBUG_DUMP_VARS:
         debug_dump(args, name="args")
         debug_dump(cfg, name="Config")
@@ -219,17 +293,20 @@ def main() -> None:
         cfg = validate_cfg_variables(cfg)
     except ValueError as e:
         logger.error(e)
-        sys.exit(2)   # Fatal error
+        # close the global log file and any Apprise handlers and exit
+        graceful_exit(2)   # Fatal error
     # Ensure all dirs exist and are writable
     if not validate_directories(cfg):
-        sys.exit(2)  # Fatal error
+        # close the global log file and any Apprise handlers and exit
+        graceful_exit(2)   # Fatal error
 
     # connect with the translation API before we do any processing
     translator = confirm_api_connection(cfg.auth_key, cfg.server_url)
     if translator is None:
-        logger.info("Unable to open translator.")
-        logger.info("Program closing")
-        sys.exit(2)  # Fatal error
+        logger.error("Unable to open translator.")
+        logger.error("Program closing")
+        # close the global log file and any Apprise handlers and exit
+        graceful_exit(2)   # Fatal error
 
 
     # now we move into doing work
@@ -242,7 +319,8 @@ def main() -> None:
             # this is really not a big deal for a 1-and-done file translation
             logger.error("Translation quota exceeded during file processing.")
             logger.error(f"{qe}")
-            sys.exit(3)  # Quota exceeded exit code
+            # close the global log file and any Apprise handlers and exit
+            graceful_exit(3)  # Quota exceeded exit code
     else:
         # directory mode
         check_period_sec = int(60 * cfg.check_period_min)  # convert minutes to seconds
@@ -283,9 +361,9 @@ def main() -> None:
                 # logger.info(f"Sleeping for {format_timespan(cfg.check_period_sec)}.")
                 time.sleep(check_period_sec)
 
-    # close the global log file
-    close_file_logger(global_file_handler, global_log_path)
-    sys.exit(0)
+    # close the global log file and any Apprise handlers and exit
+    graceful_exit(0)  
+
 
 
 
@@ -322,6 +400,19 @@ def setup_logging() -> None:
     return
 
 
+def setup_exit_hooks():
+    # Run graceful_exit on normal interpreter shutdown
+    atexit.register(graceful_exit, 0)
+
+    # Catch Ctrl-C (SIGINT) and container stop (SIGTERM)
+    def handle_signal(signum, frame):
+        logging.error("Program shutting down due to SIGINT or SIGTERM")
+        graceful_exit(1)
+
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+
+
 def build_config(args: argparse.Namespace) -> Config:
     """
     Build configuration object from CLI args and environment variables.
@@ -332,6 +423,10 @@ def build_config(args: argparse.Namespace) -> Config:
     Returns:
         Config: Fully populated configuration object.
     """
+    def parse_string_list(value: Optional[str]) -> List[str]:
+        if not value:  # catches None or ""
+            return []
+        return [s.strip() for s in value.split(",") if s.strip()]
 
     # get default values
     default = Config()
@@ -357,8 +452,32 @@ def build_config(args: argparse.Namespace) -> Config:
     new_cfg.check_period_min  = to_float(arg_or_env( args.check_every_x_minutes,        "CHECK_EVERY_X_MINUTES")  ,  default.check_period_min)
     new_cfg.translate_filename  = to_bool(arg_or_env( args.translate_filename,          "TRANSLATE_FILENAME")     ,  default.translate_filename)
     new_cfg.put_original_first     = to_bool(arg_or_env( args.original_before_translation, "ORIGINAL_BEFORE_TRANSLATION"), default.put_original_first)
-    # notify_urls_raw = args.notify_urls if args.notify_urls is not None else env_or_default("NOTIFY_URLS") or ""
-    # notify_urls = [u.strip() for u in notify_urls_raw.split(",") if u.strip()]
+
+    if APPRISE_AVAILABLE:
+        # Convert strings to lists
+        notify_urls_args_raw = parse_string_list( args.notify_urls)
+        notify_urls_env_raw  = parse_string_list( os.getenv("NOTIFY_URLS", "") )
+        # Combine and deduplicate while preserving order
+        seen = set()
+        combined = []
+        for item in notify_urls_args_raw + notify_urls_env_raw:
+            if item not in seen:
+                seen.add(item)
+                combined.append(item)
+        new_cfg.notify_urls = combined
+
+        # moved the verification to this point because the Apprise URLs get used before validate_cfg_variables()
+        if new_cfg.notify_urls and APPRISE_AVAILABLE:
+            valid_urls = []
+            for url in new_cfg.notify_urls:
+                if not url or not url.strip():
+                    continue
+                # Apprise returns True if the URL is valid and supported
+                if apprise.Apprise().add(url.strip()):
+                    valid_urls.append(url.strip())
+            new_cfg.notify_urls = valid_urls
+    else:
+        new_cfg.notify_urls = []
 
     # all bounds checking done in validate_cfg_variables(cfg)
 
@@ -468,6 +587,28 @@ def close_file_logger(filehandler: Optional[logging.FileHandler], log_file: Opti
     return
 
 
+def add_apprise_notifications_logger(notify_urls: Optional[List[str]] = None, flush_interval_seconds: float = 2.0) -> Optional[logging.Handler]:
+    """
+    Attach an Apprise notifications handler to the given logger.
+
+    Args:
+        logger (logging.Logger): The logger to attach the handler to.
+        notify_urls (list[str] | None): List of Apprise notification URLs.
+            If None, will read from NOTIFY_URLS environment variable (comma-separated).
+        flush_interval (float): Seconds to wait before bundling and sending messages.
+
+    Returns:
+        logging.Handler: The Apprise handler attached to the logger.
+    """
+    if notify_urls is None:
+        return None
+
+    handler = BufferedAppriseHandler(notify_urls, flush_interval=flush_interval_seconds)
+    handler.setFormatter(logging.Formatter('%(message)s'))
+    logger.addHandler(handler)
+    return handler
+
+
 def validate_cfg_variables(cfg: Config) -> Config:
     """
     Validate and normalize configuration values.
@@ -506,8 +647,6 @@ def validate_cfg_variables(cfg: Config) -> Config:
         logger.error(f"Check Directory Period (minutes) out of bounds and set to {default_cfg.check_period_min}.")
 
     # Add more validations as needed
-    # if cfg.notify_urls and not APPRISE_AVAILABLE:
-    #     logging.warning("Notifications configured but Apprise is not installed; notifications will be skipped.")
 
 
     return cfg
@@ -623,8 +762,7 @@ def validate_directories(cfg: Config) -> bool:
                 logger.warning(f"Program will still continue, but this should be attended to.")
             else:
                 # sys.exit(2)  # Fatal error
-                can_continue = False
-
+                can_continue = False # exit in the above calling function
 
     return can_continue
 
@@ -761,6 +899,13 @@ def process_file(file_path: Union[str, Path], cfg: Config, translator: Optional[
         delete_file(input_file_path)  # may be the translated file in the tmp directory
         if file_path.exists():
             delete_file(file_path)        # may be the original file in the input directory
+
+    # send the file via Apprise
+    if output_file_path.exists() and APPRISE_AVAILABLE: 
+        send_apprise_message( title='Translated file',
+                                body=f"Translation complete: {output_file_path.name}",
+                                attach=output_file_path)
+
 
     logger.info(f'Finished processing file.')
 
@@ -912,8 +1057,7 @@ def create_tmp_file_path(input_file: Union[str, Path], tmp_dir: Path) -> Path:
     basename = Path(input_path).stem
     extension = input_path.suffix or ""  # note: suffix includes the dot
     tmp_file_path = tmp_dir / f"{basename}_{timestamp}{extension}"
-    tmp_file_path = tmp_dir / f"{basename}_ZZZ{extension}"
-
+    # tmp_file_path = tmp_dir / f"{basename}_ZZZ{extension}"  # Debug name with constant value
 
     return tmp_file_path
 
@@ -1103,6 +1247,32 @@ def append_pdfs(original_pdf: Path, translated_pdf: Path, output_pdf: Path, put_
         return False
 
 
+def send_apprise_message(title: str, body: str, attach: Optional[Path] = None) -> Optional[bool]:
+    """
+    Send an Apprise message to the user.
+
+    Args:
+        title (str): Title of the message.
+        body (str): Body of the message.
+        attach (Path): Path to attach to the message.
+
+    Returns:
+        bool: True if the message was sent successfully, False otherwise
+    """
+    for h in logger.handlers:
+        if isinstance(h, BufferedAppriseHandler):
+            try:
+                # Found your handler; use its Apprise object directly
+                if attach and attach.exists():
+                    return h.apobj.notify( title=title, body=body,attach=attach)
+                else:
+                    return h.apobj.notify( title=title, body=body)
+            except RuntimeError as e:
+                logger.error(f"Apprise notify failed: {e}")
+                return False
+    return False
+
+
 def num_seconds_till_renewal(renewal_date: int, default_days: int = 7) -> int:
     """
     Calculate seconds until next renewal of usage allowance.
@@ -1197,6 +1367,29 @@ def sleep_with_progressbar_countdown(fh: logging.FileHandler, secs: int, steps: 
     # logger.info("Countdown finished.")
 
     return
+
+
+def graceful_exit(exit_code: int = 0) -> None:
+    """
+    Flush and close all logging handlers before exiting.
+    Ensures Apprise notifications are sent before interpreter shutdown.
+    Also, removes global log file handler.
+    """
+    global _exit_done
+    if _exit_done:
+        return
+    _exit_done = True
+
+    for h in logger.handlers[:]:
+        try:
+            h.flush()
+            h.close()
+            logger.removeHandler(h)
+        except Exception as e:
+            logger.debug(f"Handler cleanup skipped: {e}")
+
+    # now exit
+    sys.exit(exit_code)
 
 
 # -----------------------------------------------------------------------
@@ -1401,31 +1594,12 @@ def delete_file(filename: Union[str, Path]) -> bool:
         return True
 
 
-
-
-
-# def send_notification(cfg: Config, title: str, body: str):
-#     logging.debug("send_notification called")
-#     if not cfg.notify_urls:
-#         logging.debug("No notify URLs configured; skipping notification.")
-#         return
-
-#     if not APPRISE_AVAILABLE:
-#         logging.warning("Apprise not installed; cannot send notifications. Install 'apprise' to enable notifications.")
-#         return
-
-#     try:
-#         a = apprise.Apprise()
-#         for url in cfg.notify_urls:
-#             a.add(url)
-#         a.notify(title=title, body=body)
-#         logging.info("Notification sent.")
-#     except Exception as e:
-#         logging.exception("Failed to send notification: %s", e)
-
-
 # -----------------------------------------------------------------------
 # -----------------------------------------------------------------------
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logger.error(f"Fatal crash: {e}")
+        graceful_exit(1)
 
