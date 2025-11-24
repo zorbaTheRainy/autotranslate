@@ -1264,7 +1264,8 @@ def send_apprise_message(title: str, body: str, attach: Optional[Path] = None) -
             try:
                 # Found your handler; use its Apprise object directly
                 if attach and attach.exists():
-                    return h.apobj.notify( title=title, body=body,attach=attach)
+                    attach_str = str(attach)
+                    return h.apobj.notify( title=title, body=body,attach=attach_str)
                 else:
                     return h.apobj.notify( title=title, body=body)
             except RuntimeError as e:
