@@ -458,11 +458,14 @@ def build_config(args: argparse.Namespace) -> Config:
         notify_urls_args_raw = parse_string_list( args.notify_urls)
         notify_urls_env_raw  = parse_string_list( os.getenv("NOTIFY_URLS", "") )
         # Combine and deduplicate while preserving order
+        logger.debug(f"Validating and combining notify_urls")
+        logger.debug(f"Apprise will do this via threads.  So, expect the log messages to occur out of order.")
+        logger.debug(f"The pre-Apprise process is to combine the arg & ENV, then ask Apprise to validate them, if valid it will them append them in to the final notify_urls.")
         seen = set()
         combined = []
         for item in notify_urls_args_raw + notify_urls_env_raw:
             if item not in seen:
-                logger.debug(f"Combining URL: {item}")
+                logger.debug(f"Apprise, Combining URL: {item}")
                 seen.add(item)
                 combined.append(item)
         new_cfg.notify_urls = combined
@@ -473,12 +476,14 @@ def build_config(args: argparse.Namespace) -> Config:
             for url in new_cfg.notify_urls:
                 if not url or not url.strip():
                     continue
-                logger.debug(f"Validating URL: {url}")
+                logger.debug(f"Apprise, Validating URL: {url}")
                 # Apprise returns True if the URL is valid and supported
                 if apprise.Apprise().add(url.strip()):
-                    logger.debug(f"Appending URL: {url}")
+                    logger.debug(f"Apprise, Appending URL: {url}")
                     valid_urls.append(url.strip())
             new_cfg.notify_urls = valid_urls
+            # sleep in order for Apprise to finish all its threads 
+            time.sleep(5)
     else:
         new_cfg.notify_urls = []
 
@@ -1534,7 +1539,8 @@ def arg_or_env(arg: Optional[str], env_name: str) -> Optional[str]:
         str|None: Value from argument or environment.
     """
     env_val = os.getenv(env_name)
-    logger.debug(f"arg_or_env: arg={arg!r:<25}, env_name={env_name:<30}, env_val={env_val}")  # Debug print
+    if DEBUG_DUMP_VARS:
+        logger.debug(f"arg_or_env: arg={arg!r:<25}, env_name={env_name:<30}, env_val={env_val}")  # Debug print
     if arg is not None:
         return arg
     elif env_val is not None:
