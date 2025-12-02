@@ -196,8 +196,7 @@ class BufferedAppriseHandler(logging.Handler):
         if not self.buffer:
             return
         try:
-            # body = "\n".join(self.buffer)
-            body = "\n".join(str(m) for m in self.buffer if m is not None)
+            body = "\n".join(self.buffer)
             # Only notify if Apprise is still usable
             self.apobj.notify(
                 body=body,
@@ -348,7 +347,6 @@ def main() -> None:
                         translator = None # release the translator object
                         wait_seconds = num_seconds_till_renewal(cfg.usage_renewal_day)
                         if global_file_handler is not None:
-                            logger.info(f"wait_seconds = {wait_seconds}")
                             if wait_seconds >= 820800:        # ≥ 9.5 days
                                 num_graduations = 10
                             elif wait_seconds >= 648000:      # 7.5–8.5 days
@@ -359,7 +357,6 @@ def main() -> None:
                                 num_graduations = 5
                             else:                              # ≤ 4.5 days
                                 num_graduations = 4
-                            logger.info(f"about to sleep")
                             sleep_with_progressbar_countdown(global_file_handler, secs=wait_seconds, graduations=num_graduations)
                         else:
                             logger.info(f"Sleeping for {format_timespan(wait_seconds)} until usage renewal.")
@@ -1323,38 +1320,25 @@ def num_seconds_till_renewal(renewal_date: int, default_days: int = 7) -> int:
     logger.debug(f"\tnum_seconds_till_renewal() debug output ...")
     logger.debug(f"\tusageRenewalDay: {renewal_date}")
 
-    try:
-        if 1 <= renewal_date <= 31:
-            now = pendulum.now("UTC")
-            if now is None:
-                raise ValueError("pendulum.now() returned None")
-            # Construct this month's renewal date
-            ntz = now.tz or "UTC"
-            renewal_this_month = pendulum.datetime(now.year, now.month, renewal_date, tz="UTC")
-            if renewal_this_month is None:
-                raise ValueError("pendulum.datetime() returned None")
+    if 1 <= renewal_date <= 31:
+        now = pendulum.now("UTC")
+        # Construct this month's renewal date
+        renewal_this_month = pendulum.datetime(now.year, now.month, renewal_date, tz="UTC")
 
-            # If renewal day already passed, schedule next month
-            if renewal_this_month <= now:
-                renewal_this_month = renewal_this_month.add(months=1)
+        # If renewal day already passed, schedule next month
+        if renewal_this_month <= now:
+            renewal_this_month = renewal_this_month.add(months=1)
 
-            # Add 1 day buffer to avoid timezone mismatch corner cases
-            next_renewal = renewal_this_month.add(days=1)
+        # Add 1 day buffer to avoid timezone mismatch corner cases
+        next_renewal = renewal_this_month.add(days=1)
 
-            duration = next_renewal - now
-            wait_seconds = int(duration.total_seconds())
-            if duration is None:
-                raise ValueError("duration returned None")
-            if wait_seconds is None:
-                raise ValueError("wait_seconds returned None")
+        duration = next_renewal - now
+        wait_seconds = int(duration.total_seconds())
 
-            logger.debug(f"\tnow = {now!r}")
-            logger.debug(f"\tnextRenewal = {next_renewal!r}")
-            logger.debug(f"\tduration = {duration!r}")
-            logger.debug(f"\twait_seconds = {wait_seconds!r}")
-    except Exception as error:
-        logger.error(f"Error calculating next renewal time: {error}")
-        logger.error(f"Using default wait time of {default_days} days.")
+        logger.debug(f"\tnow = {now}")
+        logger.debug(f"\tnextRenewal = {next_renewal}")
+        logger.debug(f"\tduration = {duration}")
+        logger.debug(f"\twait_seconds = {wait_seconds}")
 
     return wait_seconds
 
@@ -1444,7 +1428,7 @@ def sleep_with_progressbar_countdown(fh: logging.FileHandler, secs: int, steps: 
             label_p = label_p.rjust(3, "-") # fill if 1 digit and not 2 digits (and % to make 2-3 char string)
             percent_line += label_p
             graduation_line += "|"
-        if (total_chars < steps):
+        if total_chars < steps:
             percent_line += "-" * (steps - total_chars)
             graduation_line += "-" * (steps - total_chars)
         percent_line += "-" * int(char_per_graduation ) + "|"
