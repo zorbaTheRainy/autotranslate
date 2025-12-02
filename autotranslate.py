@@ -369,10 +369,12 @@ def main() -> None:
             # sleep for the configured period before checking again
             if (cfg.check_period_min >= 30) and (global_file_handler is not None):
                 translator = None # release the translator object
+                flush_handlers()
                 sleep_with_progressbar_countdown(global_file_handler, secs=check_period_sec,
                                                     use_time_labels=False, use_percent_labels=False)
             else:
                 # logger.info(f"Sleeping for {format_timespan(cfg.check_period_sec)}.")
+                flush_handlers()
                 time.sleep(check_period_sec)
 
     # close the global log file and any Apprise handlers and exit
