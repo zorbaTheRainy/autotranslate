@@ -196,7 +196,8 @@ class BufferedAppriseHandler(logging.Handler):
         if not self.buffer:
             return
         try:
-            body = "\n".join(self.buffer)
+            # body = "\n".join(self.buffer)
+            body = "\n".join(str(m) for m in self.buffer if m is not None)
             # Only notify if Apprise is still usable
             self.apobj.notify(
                 body=body,
@@ -1325,7 +1326,8 @@ def num_seconds_till_renewal(renewal_date: int, default_days: int = 7) -> int:
     if 1 <= renewal_date <= 31:
         now = pendulum.now()
         # Construct this month's renewal date
-        renewal_this_month = pendulum.datetime(now.year, now.month, renewal_date, tz=now.tz)
+        tz = now.tz or "UTC"
+        renewal_this_month = pendulum.datetime(now.year, now.month, renewal_date, tz=tz)
 
         # If renewal day already passed, schedule next month
         if renewal_this_month <= now:
