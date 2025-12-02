@@ -533,8 +533,8 @@ def add_global_file_logger(log_dir: Path, log_filename: str = "_autotranslate.lo
         # confirm log_dir exists, throw error otherwise
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        num_bytes = 32 * 1024 * 1024 * 1024 #  32 GiB
-        g_fh = logging.handlers.RotatingFileHandler(log_file ,'a',num_bytes,3) # filename, append, number of bytes max, number of logs max
+        num_bytes = 10  * 1024 * 1024 #  10 MiB
+        g_fh = logging.handlers.RotatingFileHandler(log_file ,'a',num_bytes,5) # filename, append, number of bytes max, number of logs max
         g_fh.setLevel(logging.DEBUG)
         g_ff = logging.Formatter('%(asctime)s - %(levelname)7s - %(message)s')
         g_fh.setFormatter(g_ff)
@@ -1323,26 +1323,30 @@ def num_seconds_till_renewal(renewal_date: int, default_days: int = 7) -> int:
     logger.debug(f"\tnum_seconds_till_renewal() debug output ...")
     logger.debug(f"\tusageRenewalDay: {renewal_date}")
 
-    if 1 <= renewal_date <= 31:
-        now = pendulum.now()
-        # Construct this month's renewal date
-        tz = now.tz or "UTC"
-        renewal_this_month = pendulum.datetime(now.year, now.month, renewal_date, tz=tz)
+    try:
+        if 1 <= renewal_date <= 31:
+            now = pendulum.now()
+            # Construct this month's renewal date
+            tz = now.tz or "UTC"
+            renewal_this_month = pendulum.datetime(now.year, now.month, renewal_date, tz=tz)
 
-        # If renewal day already passed, schedule next month
-        if renewal_this_month <= now:
-            renewal_this_month = renewal_this_month.add(months=1)
+            # If renewal day already passed, schedule next month
+            if renewal_this_month <= now:
+                renewal_this_month = renewal_this_month.add(months=1)
 
-        # Add 1 day buffer to avoid timezone mismatch corner cases
-        next_renewal = renewal_this_month.add(days=1)
+            # Add 1 day buffer to avoid timezone mismatch corner cases
+            next_renewal = renewal_this_month.add(days=1)
 
-        duration = next_renewal - now
-        wait_seconds = int(duration.total_seconds())
+            duration = next_renewal - now
+            wait_seconds = int(duration.total_seconds())
 
-        logger.debug(f"\tnow = {now}")
-        logger.debug(f"\tnextRenewal = {next_renewal}")
-        logger.debug(f"\tduration = {duration}")
-        logger.debug(f"\twait_seconds = {wait_seconds}")
+            logger.debug(f"\tnow = {now}")
+            logger.debug(f"\tnextRenewal = {next_renewal}")
+            logger.debug(f"\tduration = {duration}")
+            logger.debug(f"\twait_seconds = {wait_seconds}")
+    except Exception as error:
+        logger.error(f"Error calculating next renewal time: {error}")
+        logger.error(f"Using default wait time of {default_days} days.")
 
     return wait_seconds
 
