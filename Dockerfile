@@ -24,4 +24,4 @@ COPY version.py version.py
 RUN pip3 install -r requirements.txt && \
     mkdir /inputDir /outputDir /logDir
 
-ENTRYPOINT "./autotranslate.py"
+ENTRYPOINT ["./autotranslate.py"]
