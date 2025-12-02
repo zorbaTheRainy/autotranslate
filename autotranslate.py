@@ -1326,9 +1326,13 @@ def num_seconds_till_renewal(renewal_date: int, default_days: int = 7) -> int:
     try:
         if 1 <= renewal_date <= 31:
             now = pendulum.now()
+            if now is None:
+                raise ValueError("pendulum.now() returned None")
             # Construct this month's renewal date
-            tz = now.tz or "UTC"
-            renewal_this_month = pendulum.datetime(now.year, now.month, renewal_date, tz=tz)
+            ntz = now.tz or "UTC"
+            renewal_this_month = pendulum.datetime(now.year, now.month, renewal_date, tz=ntz)
+            if renewal_this_month is None:
+                raise ValueError("pendulum.datetime() returned None")
 
             # If renewal day already passed, schedule next month
             if renewal_this_month <= now:
@@ -1339,6 +1343,10 @@ def num_seconds_till_renewal(renewal_date: int, default_days: int = 7) -> int:
 
             duration = next_renewal - now
             wait_seconds = int(duration.total_seconds())
+            if duration is None:
+                raise ValueError("duration returned None")
+            if wait_seconds is None:
+                raise ValueError("wait_seconds returned None")
 
             logger.debug(f"\tnow = {now}")
             logger.debug(f"\tnextRenewal = {next_renewal}")
