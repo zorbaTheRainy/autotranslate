@@ -197,7 +197,8 @@ class BufferedAppriseHandler(logging.Handler):
             # Only notify if Apprise is still usable
             self.apobj.notify(
                 body=body,
-                title="Logger Errors"
+                title="Logger Errors",
+                body_format="text"
             )
         except RuntimeError as e:
             # Avoid raising during interpreter shutdown
@@ -343,20 +344,18 @@ def main() -> None:
                         translator = None # release the translator object
                         wait_seconds = num_seconds_till_renewal(cfg.usage_renewal_day)
                         if global_file_handler is not None:
+                            logger.info(f"wait_seconds = {wait_seconds}")
                             if wait_seconds >= 820800:        # ≥ 9.5 days
                                 num_graduations = 10
-                            # elif wait_seconds >= 734400:      # 8.5–9.5 days
-                            #     num_graduations = 9
                             elif wait_seconds >= 648000:      # 7.5–8.5 days
                                 num_graduations = 8
-                            # elif wait_seconds >= 561600:      # 6.5–7.5 days
-                            #     num_graduations = 7
                             elif wait_seconds >= 475200:      # 5.5–6.5 days
                                 num_graduations = 6
                             elif wait_seconds >= 388800:      # 4.5–5.5 days
                                 num_graduations = 5
                             else:                              # ≤ 4.5 days
                                 num_graduations = 4
+                            logger.info(f"about to sleep")
                             sleep_with_progressbar_countdown(global_file_handler, secs=wait_seconds, graduations=num_graduations)
                         else:
                             logger.info(f"Sleeping for {format_timespan(wait_seconds)} until usage renewal.")
@@ -1293,9 +1292,9 @@ def send_apprise_message(title: str, body: str, attach: Optional[Path] = None) -
                 # Found your handler; use its Apprise object directly
                 if attach and attach.exists():
                     attach_str = str(attach)
-                    return h.apobj.notify( title=title, body=body,attach=attach_str)
+                    return h.apobj.notify( title=title, body=body, body_format="text", attach=attach_str)
                 else:
-                    return h.apobj.notify( title=title, body=body)
+                    return h.apobj.notify( title=title, body=body, body_format="text")
             except RuntimeError as e:
                 logger.error(f"Apprise notify failed: {e}")
                 return False
@@ -1383,7 +1382,7 @@ def sleep_with_progressbar_countdown(fh: logging.FileHandler, secs: int, steps: 
         fh.stream.write(bar_line + "\n")
         fh.stream.flush()
 
-        # write the time table ( XX% - HH:MM:SS )   
+        # write the time table ( XX% - HH:MM:SS )
         for i in range(0, graduations): # start at 0 to get 100%
             scale = ["|"]
             label_p = f"{int((graduations - i) * 100 / graduations)}%" + " - "
@@ -1401,10 +1400,11 @@ def sleep_with_progressbar_countdown(fh: logging.FileHandler, secs: int, steps: 
         fh.stream.flush()
 
     # Build scale line with countdown graduations
+    if use_percent_labels:
         # see if the math is less than the actual number of steps
         total_chars = 2 + (char_per_graduation * graduations)
         pad_count = steps - total_chars   # how many "-"s do we need to add to reach (pad) to equal steps
-        candidates = list(range(1, graduations+1))  # add 1 to graduaiotns because we could pad the last section
+        candidates = list(range(1, graduations+1))  # add 1 to graduations because we could pad the last section
 
         # Choose evenly spaced indices to pad
         if pad_count > 0:
@@ -1465,6 +1465,9 @@ def graceful_exit(exit_code: int = 0) -> None:
     if getattr(graceful_exit, "exit_done", False):
         return
     graceful_exit.exit_done = True
+
+    # Write one last newline
+    logger.info("")   # emits a blank line
 
     for h in logger.handlers[:]:
         try:
