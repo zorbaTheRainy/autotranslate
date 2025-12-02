@@ -343,7 +343,21 @@ def main() -> None:
                         translator = None # release the translator object
                         wait_seconds = num_seconds_till_renewal(cfg.usage_renewal_day)
                         if global_file_handler is not None:
-                            sleep_with_progressbar_countdown(global_file_handler, wait_seconds)
+                            if wait_seconds >= 820800:        # ≥ 9.5 days
+                                num_graduations = 10
+                            # elif wait_seconds >= 734400:      # 8.5–9.5 days
+                            #     num_graduations = 9
+                            elif wait_seconds >= 648000:      # 7.5–8.5 days
+                                num_graduations = 8
+                            # elif wait_seconds >= 561600:      # 6.5–7.5 days
+                            #     num_graduations = 7
+                            elif wait_seconds >= 475200:      # 5.5–6.5 days
+                                num_graduations = 6
+                            elif wait_seconds >= 388800:      # 4.5–5.5 days
+                                num_graduations = 5
+                            else:                              # ≤ 4.5 days
+                                num_graduations = 4
+                            sleep_with_progressbar_countdown(global_file_handler, secs=wait_seconds, graduations=num_graduations)
                         else:
                             logger.info(f"Sleeping for {format_timespan(wait_seconds)} until usage renewal.")
                             time.sleep(wait_seconds)
@@ -1338,34 +1352,92 @@ def sleep_with_progressbar_countdown(fh: logging.FileHandler, secs: int, steps: 
         secs (int): Total sleep duration in seconds.
         steps (int): Number of progress bar steps.
         graduations (int): Number of graduation markers.
-        use_time_labels (bool): Whether to show time remaining labels.
+        use_time_labels (bool): Whether to show time remaining labels.  Implies use_percent_labels.
         use_percent_labels (bool): Whether to show percentage remaining.
     """
     logger.info(f"Sleeping for {format_timespan(secs)} (countdown mode).")
 
-    # Build scale line with countdown graduations
+    # input error checking
+    if graduations < 1:
+        graduations = 1
+    if steps < 10:
+        steps = 10
     if use_time_labels:
-        scale = ["|"]
-        for i in range(1, graduations):
-            pos = int(i * (steps - 2) / graduations)
-            # Show time remaining markers
-            label = format_timespan(int(secs * (graduations - i) / graduations))
-            scale.append(label.rjust(pos - len("".join(scale)), "-"))
-        scale_line = "".join(scale) + "|"
-        fh.stream.write(scale_line + "\n")
+        use_percent_labels = True
+
+    # setup values to space out extra chars if steps is not perfectly divisible
+    char_per_graduation = int((steps - 2) / graduations)
+    #print(f"char_per_graduation: {char_per_graduation}")
+    char_per_graduation_minimum = 4
+    if char_per_graduation < char_per_graduation_minimum:
+        graduations = (steps - 2) // char_per_graduation_minimum
+        char_per_graduation = int((steps - 2) / graduations)
+
+    # Build scale line with countdown graduations (time labels)
+    bar_line = "-" * (steps - 2)
+    bar_line = "|" + bar_line + "|"
+
+    # Build scale line with countdown graduations (time labels)
+    if use_time_labels:
+        # write header line of the "table"
+        fh.stream.write(bar_line + "\n")
+        fh.stream.flush()
+
+        # write the time table ( XX% - HH:MM:SS )   
+        for i in range(0, graduations): # start at 0 to get 100%
+            scale = ["|"]
+            label_p = f"{int((graduations - i) * 100 / graduations)}%" + " - "
+            scale.append(label_p.rjust(8, " "))
+            label_t = format_timespan(int(secs * (graduations - i) / graduations))
+            scale.append(label_t)
+            scale.append("".rjust(steps - 1 - len("".join(scale)), " "))
+            scale_line = "".join(scale) + "|"
+            # write to log
+            fh.stream.write(scale_line + "\n")
+            fh.stream.flush()
+
+        # write separator line of the "table"
+        fh.stream.write(bar_line + "\n")
         fh.stream.flush()
 
     # Build scale line with countdown graduations
-    if use_percent_labels:
-        scale = ["|"]
+        # see if the math is less than the actual number of steps
+        total_chars = 2 + (char_per_graduation * graduations)
+        pad_count = steps - total_chars   # how many "-"s do we need to add to reach (pad) to equal steps
+        candidates = list(range(1, graduations+1))  # add 1 to graduaiotns because we could pad the last section
+
+        # Choose evenly spaced indices to pad
+        if pad_count > 0:
+            # spacing factor
+            spacing = len(candidates) / pad_count
+            pad_indices = [candidates[int(round(j * spacing))] for j in range(pad_count)]
+        else:
+            pad_indices = []
+
+        percent_line = "|"
+        graduation_line = "|"
         for i in range(1, graduations):
-            pos = int(i * (steps - 2) / graduations)
-            # Show percentage remaining
-            label = f"{int((graduations - i) * 100 / graduations)}%"
-            scale.append(label.rjust(pos - len("".join(scale)), "-"))
-        scale_line = "".join(scale) + "|"
-        fh.stream.write(scale_line + "\n")
+            percent_line += "-" * int(char_per_graduation - 3) # 3 is 2 digits + %
+            graduation_line += "-" * int(char_per_graduation - 1) # 1 is "|"
+            if (total_chars < steps) and (i in pad_indices):
+                percent_line += "-"
+                graduation_line += "-"
+                total_chars += 1
+            label_p = f"{int((graduations - i) * 100 / graduations)}%"  # results in a 2 or 3 char string
+            label_p = label_p.rjust(3, "-") # fill if 1 digit and not 2 digits (and % to make 2-3 char string)
+            percent_line += label_p
+            graduation_line += "|"
+        if (total_chars < steps):
+            percent_line += "-" * (steps - total_chars)
+            graduation_line += "-" * (steps - total_chars)
+        percent_line += "-" * int(char_per_graduation ) + "|"
+        graduation_line += "-" * int(char_per_graduation ) + "|"
+
+        # write to log
+        fh.stream.write(percent_line + "\n")
+        fh.stream.write(graduation_line + "\n")
         fh.stream.flush()
+
 
     # Progress bar line
     fh.stream.write("[")
