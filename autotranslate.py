@@ -1325,12 +1325,12 @@ def num_seconds_till_renewal(renewal_date: int, default_days: int = 7) -> int:
 
     try:
         if 1 <= renewal_date <= 31:
-            now = pendulum.now()
+            now = pendulum.now("UTC")
             if now is None:
                 raise ValueError("pendulum.now() returned None")
             # Construct this month's renewal date
             ntz = now.tz or "UTC"
-            renewal_this_month = pendulum.datetime(now.year, now.month, renewal_date, tz=ntz)
+            renewal_this_month = pendulum.datetime(now.year, now.month, renewal_date, tz="UTC")
             if renewal_this_month is None:
                 raise ValueError("pendulum.datetime() returned None")
 
@@ -1348,10 +1348,10 @@ def num_seconds_till_renewal(renewal_date: int, default_days: int = 7) -> int:
             if wait_seconds is None:
                 raise ValueError("wait_seconds returned None")
 
-            logger.debug(f"\tnow = {now}")
-            logger.debug(f"\tnextRenewal = {next_renewal}")
-            logger.debug(f"\tduration = {duration}")
-            logger.debug(f"\twait_seconds = {wait_seconds}")
+            logger.debug(f"\tnow = {now!r}")
+            logger.debug(f"\tnextRenewal = {next_renewal!r}")
+            logger.debug(f"\tduration = {duration!r}")
+            logger.debug(f"\twait_seconds = {wait_seconds!r}")
     except Exception as error:
         logger.error(f"Error calculating next renewal time: {error}")
         logger.error(f"Using default wait time of {default_days} days.")
