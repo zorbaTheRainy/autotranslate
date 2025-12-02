@@ -161,7 +161,7 @@ autotranslate.py --k YOUR_API_KEY --notify-urls 'mailto://boo:HisAppPassword@gma
 
 | Short           | Long             | Meaning  |
 | ---------------------- | ------- | ------- |
-| `-h` | `--help` | Prints out the usage report |
+| `-h` | `--help` | Prints out the standard "how to use" message |
 |   | `--version` | Prints out the version number |
 |   | `[file]` | The file you wish to translate.  Puts Autotranslate.py into single-file mode. |
 
@@ -180,7 +180,7 @@ Any error messages (including Docker stops) will be sent to you via a notificati
 
 Autotranslate handles notifications via the [Apprise Python library](https://github.com/caronc/apprise), which allows Autotranslate to support 100+ notification systems out-of-the-box!
 
-It will now support email, Discord, Gotify, Ntfy, ITTT, and so many more.  But, ... you have to provide it with a Apprise-style URL (or multiple) in order for it to work (the ENV `NOTIFY_URLS` or CLI switch `--notify-urls`).  
+It will now support email, Discord, Gotify, Ntfy, ITTT, and so many more.  But, ... you have to provide it with a Apprise-style URL (or multiple) in order for it to work (via the ENV `NOTIFY_URLS` or CLI switch `--notify-urls`).  
 Please look at [Apprise's documentation](https://github.com/caronc/apprise/wiki) to figure out how to format your desired URLs.  
 You can see a complex email example in the Docker compose example above.
 
