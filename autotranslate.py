@@ -127,7 +127,10 @@ class QuotaExceededException(Exception):
 
         # Copy over all attributes from the original exception
         for attr, value in vars(original_exc).items():
-            setattr(self, attr, value)
+            try:
+                setattr(self, attr, str(value) if value is not None else "")
+            except Exception:
+                setattr(self, attr, "")
 
 class SizeBasedFilter(logging.Filter):
     """
