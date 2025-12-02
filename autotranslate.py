@@ -345,6 +345,7 @@ def main() -> None:
                         logger.error(f"{qe}")
 
                         translator = None # release the translator object
+                        flush_handlers() # flush any pending log messages before sleep
                         wait_seconds = num_seconds_till_renewal(cfg.usage_renewal_day)
                         if global_file_handler is not None:
                             if wait_seconds >= 820800:        # ≥ 9.5 days
@@ -1456,6 +1457,16 @@ def sleep_with_progressbar_countdown(fh: logging.FileHandler, secs: int, steps: 
 
     return
 
+
+def flush_handlers() -> None:
+   # Write one last newline
+    logger.info("")   # emits a blank line
+
+    for h in logger.handlers[:]:
+        try:
+            h.flush()
+        except (OSError, RuntimeError) as e:
+            logger.debug(f"Handler cleanup skipped: {e}")
 
 def graceful_exit(exit_code: int = 0) -> None:
     """
