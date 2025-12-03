@@ -429,7 +429,16 @@ def setup_exit_hooks():
 
     # Catch Ctrl-C (SIGINT) and container stop (SIGTERM)
     def handle_signal(signum, _frame):
-        logging.error(f"Program shutting down due to the signal {signum}.")
+        # newline
+        logging.error("")
+
+        sig_name = signal.Signals(signum).name  # e.g. "SIGTERM"
+        if sig_name == "SIGTERM":
+            logging.error("Program received SIGTERM (signal 15): container stop or `docker kill` request.")
+        elif sig_name == "SIGINT":
+            logging.error("Program received SIGINT (signal 2): interrupted by Ctrl-C.")
+        else:
+            logging.error(f"Program shutting down due to {sig_name} (signal {signum}).")
         graceful_exit(1)
 
     signal.signal(signal.SIGINT, handle_signal)
@@ -1402,7 +1411,7 @@ def sleep_with_progressbar_countdown(fh: logging.FileHandler, secs: int, steps: 
         # write step line
         interval = secs / (steps - 2)
         scale = ["|"]
-        scale.append("# =".rjust(8, " "))
+        scale.append("# = ".rjust(8, " "))
         label_s = format_timespan(int(interval))
         scale.append(label_s)
         scale.append("".rjust(steps - 1 - len("".join(scale)), " "))
@@ -1474,7 +1483,14 @@ def sleep_with_progressbar_countdown(fh: logging.FileHandler, secs: int, steps: 
 
 
 def flush_handlers() -> None:
-   # Write one last newline
+    """
+    Flush all active logging handlers to ensure buffered log messages are written.
+    - Emits a final blank line to separate the last log entry cleanly.
+
+    This function is typically invoked during program shutdown or long sleep to guarantee that
+    all log output is flushed to console, files, or external services before exit.
+    """
+    # Write one last newline
     logger.info("")   # emits a blank line
 
     for h in logger.handlers[:]:
