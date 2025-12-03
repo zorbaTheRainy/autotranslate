@@ -1399,6 +1399,19 @@ def sleep_with_progressbar_countdown(fh: logging.FileHandler, secs: int, steps: 
             fh.stream.write(scale_line + "\n")
             fh.stream.flush()
 
+        # write step line
+        interval = secs / (steps - 2)
+        scale = ["|"]
+        scale.append("# =".rjust(8, " "))
+        label_s = format_timespan(int(interval))
+        scale.append(label_s)
+        scale.append("".rjust(steps - 1 - len("".join(scale)), " "))
+        scale_line = "".join(scale) + "|"
+        # write to log
+        fh.stream.write(scale_line + "\n")
+        fh.stream.flush()
+
+
         # write separator line of the "table"
         fh.stream.write(bar_line + "\n")
         fh.stream.flush()
