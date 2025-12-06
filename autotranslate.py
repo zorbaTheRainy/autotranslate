@@ -327,6 +327,7 @@ def main() -> None:
     else:
         # directory mode
         check_period_sec = int(60 * cfg.check_period_min)  # convert minutes to seconds
+        did_flush = False # initialize flush flag for directory mode
         while True: # loop forever
             for file_path in cfg.input_dir.iterdir():
                 if file_path.is_dir():
@@ -334,6 +335,8 @@ def main() -> None:
                 if file_path.name.startswith("."):
                     continue
                 if file_path.suffix.lower() == ".pdf": # only process PDF files
+                    did_flush = False # reset flush flag for this file processing loop
+
                     try:
                         # connect with the translation API before we do any processing
                         # program may have been running for a long time and needs refreshing
@@ -345,7 +348,8 @@ def main() -> None:
                         logger.error(f"{qe}")
 
                         translator = None # release the translator object
-                        flush_handlers() # flush any pending log messages before sleep
+                        if not did_flush:
+                            did_flush = flush_handlers() # flush any pending log messages before sleep
                         wait_seconds = num_seconds_till_renewal(cfg.usage_renewal_day)
                         if global_file_handler is not None:
                             if wait_seconds >= 820800:        # ≥ 9.5 days
@@ -369,12 +373,14 @@ def main() -> None:
             # sleep for the configured period before checking again
             if (cfg.check_period_min >= 30) and (global_file_handler is not None):
                 translator = None # release the translator object
-                flush_handlers()
+                if not did_flush:
+                    did_flush = flush_handlers()
                 sleep_with_progressbar_countdown(global_file_handler, secs=check_period_sec,
                                                     use_time_labels=False, use_percent_labels=False)
             else:
                 # logger.info(f"Sleeping for {format_timespan(cfg.check_period_sec)}.")
-                flush_handlers()
+                if not did_flush:
+                    did_flush = flush_handlers()
                 time.sleep(check_period_sec)
 
     # close the global log file and any Apprise handlers and exit
@@ -1482,7 +1488,7 @@ def sleep_with_progressbar_countdown(fh: logging.FileHandler, secs: int, steps: 
     return
 
 
-def flush_handlers() -> None:
+def flush_handlers() -> bool:
     """
     Flush all active logging handlers to ensure buffered log messages are written.
     - Emits a final blank line to separate the last log entry cleanly.
@@ -1490,14 +1496,19 @@ def flush_handlers() -> None:
     This function is typically invoked during program shutdown or long sleep to guarantee that
     all log output is flushed to console, files, or external services before exit.
     """
+    did_flush = False
+    
     # Write one last newline
     logger.info("")   # emits a blank line
+    did_flush = True
 
     for h in logger.handlers[:]:
         try:
             h.flush()
         except (OSError, RuntimeError) as e:
             logger.debug(f"Handler cleanup skipped: {e}")
+
+    return did_flush
 
 def graceful_exit(exit_code: int = 0) -> None:
     """
