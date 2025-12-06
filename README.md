@@ -252,6 +252,13 @@ When I get this to a state where it doesn't need improvement, I won't improve it
 
 But if it works well enough, I'll do something else (the urge to tinker aside).
 
+## Star History
+
+Oh, look at my ego!!!!
+
+[![Star History Chart](https://api.star-history.com/svg?repos=zorbaTheRainy/autotranslate&type=date&legend=top-left)](https://www.star-history.com/#zorbaTheRainy/autotranslate&type=date&legend=top-left)
+
+
 ## License
 
 [MIT](LICENSE)
