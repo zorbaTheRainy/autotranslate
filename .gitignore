@@ -14,7 +14,7 @@ tmp*.*
 *.log
 *.bak
 
-# ignore development files
+# ignore development files 
 .env
 test
 folders/

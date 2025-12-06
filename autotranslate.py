@@ -1497,7 +1497,7 @@ def flush_handlers() -> bool:
     all log output is flushed to console, files, or external services before exit.
     """
     did_flush = False
-    
+
     # Write one last newline
     logger.info("")   # emits a blank line
     did_flush = True
