@@ -22,6 +22,13 @@ COPY autotranslate.py autotranslate.py
 COPY version.py version.py
 
 RUN pip3 install -r requirements.txt && \
-    mkdir /inputDir /outputDir /logDir
+    mkdir /inputDir /outputDir /logDir && \
+    mkdir html
 
-ENTRYPOINT ["./autotranslate.py"]
+COPY autotranslate_web_server.py autotranslate_web_server.py
+COPY html/index.html html/index.html
+
+# ENTRYPOINT ["./autotranslate.py"]
+ENTRYPOINT ["./autotranslate_web_server.py"]
+
+EXPOSE 5432
