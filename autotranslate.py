@@ -34,6 +34,7 @@ import signal                                  # https://docs.python.org/3/libra
 import string                                  # https://docs.python.org/3/library/string.html
 import sys                                     # https://docs.python.org/3/library/sys.html
 import time                                    # https://docs.python.org/3/library/time.html
+import threading                               # https://docs.python.org/3/library/threading.html
 from dataclasses import dataclass, field       # https://docs.python.org/3/library/dataclasses.html
 from datetime import datetime                  # https://docs.python.org/3/library/datetime.html
 from pathlib import Path                       # https://docs.python.org/3/library/pathlib.html
@@ -48,6 +49,7 @@ from humanfriendly import format_timespan      # pip install humanfriendly     #
 from pypdf import PdfWriter                    # pip install pypdf             # https://pypdf.readthedocs.io/
 from pypdf.errors import PdfReadError          # pip install pypdf             # https://pypdf.readthedocs.io/
 from unidecode import unidecode                # pip install unidecode         # https://pypi.org/project/Unidecode/
+from dotenv import load_dotenv                 # pip install dotenv            # https://pypi.org/project/python-dotenv/
 
 # intra-module imports
 from version import VERSION as __version__
@@ -66,8 +68,8 @@ except ImportError:
 # -----------------------------------------------------------------------
 logger = logging.getLogger()
 # DEBUG variables
-DEBUG_DUMP_VARS = False  # Set to True to enable config/args debug dump
-DEBUG_NO_SEND_FILE = False  # Set to True to skip sending translated files (for testing)
+DEBUG_DUMP_VARS = True  # Set to True to enable config/args debug dump
+DEBUG_NO_SEND_FILE = True  # Set to True to skip sending translated files (for testing)
 
 
 # -----------------------------------------------------------------------
@@ -95,18 +97,41 @@ class Config:
     # Directory paths
     input_dir:  Path = Path("/inputDir")  # note: if outside a container, this is changed to ./input  in build_config()
     output_dir: Path = Path("/outputDir") # note: if outside a container, this is changed to ./output
-    log_dir:    Path = Path("/logDir")   # note: if outside a container, this is changed to ./logs
+    log_dir:    Path = Path("/logDir")    # note: if outside a container, this is changed to ./logs
     tmp_dir:    Path = Path("/tmp")       # note: if outside a container, this is changed to /tmp
     # API and server settings
     auth_key:   str = ""
     server_url: str = ""
     # Translation settings
+    source_file:        Optional[Path] = None
     target_lang:        str = "EN-US"
     check_period_min:   float = 15
     usage_renewal_day:  int = 0
     put_original_first: bool = False
     translate_filename: bool = False
     notify_urls: List[str] = field(default_factory=list)
+    # Run-time variables (not set via args or env)
+    global_log_file_handler: Optional[logging.FileHandler] = None
+    global_log_file_path: Optional[Path] = None
+    callback_on_local_log_file: Optional[Callable[[Path], None]] = None
+    callback_on_file_complete: Optional[Callable[[Path], None]] = None
+
+@dataclass
+class ConfigNonContainerDefaults(Config):
+    # Directory paths
+    input_dir:  Path = Path("./folders/inputDir")  # note: if outside a container, this is changed to ./input  in build_config()
+    output_dir: Path = Path("./folders/outputDir") # note: if outside a container, this is changed to ./output
+    log_dir:    Path = Path("./folders/logDir")    # note: if outside a container, this is changed to ./logs
+    tmp_dir:    Path = Path("/tmp")       # note: if outside a container, this is changed to /tmp
+
+class EmptyArgs(argparse.Namespace):
+    def __getattr__(self, name):
+        return None
+
+class ConfigurationError(Exception):
+    """Custom exception raised when there is an issue with the configuration."""
+    def __init__(self, message: str = "Configuration error"):
+        super().__init__(message)
 
 class FilenameCleanseError(Exception):
     """Custom exception raised when filename sanitization fails."""
@@ -267,39 +292,10 @@ def main() -> None:
     - Handles quota exceeded events with renewal countdown
     """
 
-    # init logger, and start output to STDOUT
-    setup_logging()
-
-    # Handle normal exits (atexit), and SIGINT/SIGTERM signals
-    setup_exit_hooks()
-
-    # read the commandline args and ENVs, setup cfg object
-    args = parse_args()
-    # Merge ENVs with the args, args taking precedence
-        # Note: args.file does not migrate to cfg, as it is only for single file mode.
-    cfg = build_config(args)
-
-    # Now setup the global log file (note: log_dir may not exist, fails gracefully)
-    global_file_handler, _ = add_global_file_logger(cfg.log_dir)
-
-    # Setup Apprise notifications on Errors
-    if APPRISE_AVAILABLE:
-        add_apprise_notifications_logger(cfg.notify_urls)
-
-    # debug stuff
-    if DEBUG_DUMP_VARS:
-        debug_dump(args, name="args")
-        debug_dump(cfg, name="Config")
-
-    # Ensure all config variables have valid values
     try:
-        cfg = validate_cfg_variables(cfg)
-    except ValueError as e:
+        cfg = init_autotranslate()
+    except (ConfigurationError, ValueError) as e:
         logger.error(e)
-        # close the global log file and any Apprise handlers and exit
-        graceful_exit(2)   # Fatal error
-    # Ensure all dirs exist and are writable
-    if not validate_directories(cfg):
         # close the global log file and any Apprise handlers and exit
         graceful_exit(2)   # Fatal error
 
@@ -313,75 +309,36 @@ def main() -> None:
 
 
     # now we move into doing work
-    if args.file is not None:
+    if cfg.source_file is not None:
         # single file mode
-        file_path = Path(args.file)
         try:
-            process_file(file_path, cfg, translator)
-        except QuotaExceededException as qe:
+            process_file(cfg.source_file, cfg)
+        except Exception as e:
             # this is really not a big deal for a 1-and-done file translation
-            logger.error("Translation quota exceeded during file processing.")
-            logger.error(f"{qe}")
+            if isinstance(e, QuotaExceededException):
+                logger.error("Translation quota exceeded during file processing.")
+            elif isinstance(e, deepl.DeepLException):
+                logger.error("DeepL API error occurred during file processing.")
+            else:
+                logger.error("Unexpected error occurred during file processing.")
+            logger.error(f"{e}")
             # close the global log file and any Apprise handlers and exit
-            graceful_exit(3)  # Quota exceeded exit code
+            if isinstance(e, QuotaExceededException):
+                graceful_exit(3)  # Quota exceeded exit code
+            else:
+                graceful_exit(2)  # Fatal error
     else:
         # directory mode
-        check_period_sec = int(60 * cfg.check_period_min)  # convert minutes to seconds
-        did_flush = False # initialize flush flag for directory mode
-        while True: # loop forever
-            for file_path in cfg.input_dir.iterdir():
-                if file_path.is_dir():
-                    continue
-                if file_path.name.startswith("."):
-                    continue
-                if file_path.suffix.lower() == ".pdf": # only process PDF files
-                    did_flush = False # reset flush flag for this file processing loop
-
-                    try:
-                        # connect with the translation API before we do any processing
-                        # program may have been running for a long time and needs refreshing
-                        if translator is None:
-                            translator = confirm_api_connection(cfg.auth_key, cfg.server_url)
-                        process_file(file_path, cfg, translator)
-                    except QuotaExceededException as qe:
-                        logger.error("Translation quota exceeded during file processing.")
-                        logger.error(f"{qe}")
-
-                        translator = None # release the translator object
-                        if not did_flush:
-                            did_flush = flush_handlers() # flush any pending log messages before sleep
-                        wait_seconds = num_seconds_till_renewal(cfg.usage_renewal_day)
-                        if global_file_handler is not None:
-                            if wait_seconds >= 820800:        # ≥ 9.5 days
-                                num_graduations = 10
-                            elif wait_seconds >= 648000:      # 7.5–8.5 days
-                                num_graduations = 8
-                            elif wait_seconds >= 475200:      # 5.5–6.5 days
-                                num_graduations = 6
-                            elif wait_seconds >= 388800:      # 4.5–5.5 days
-                                num_graduations = 5
-                            else:                              # ≤ 4.5 days
-                                num_graduations = 4
-                            sleep_with_progressbar_countdown(global_file_handler, secs=wait_seconds, graduations=num_graduations)
-                        else:
-                            logger.info(f"Sleeping for {format_timespan(wait_seconds)} until usage renewal.")
-                            time.sleep(wait_seconds)
-                        break  # break out of the for loop to re-check the input directory after sleep
-
-                    time.sleep(20) # Delay for X seconds to prevent pounding on the server.
-
-            # sleep for the configured period before checking again
-            if (cfg.check_period_min >= 30) and (global_file_handler is not None):
-                translator = None # release the translator object
-                if not did_flush:
-                    did_flush = flush_handlers()
-                sleep_with_progressbar_countdown(global_file_handler, secs=check_period_sec,
-                                                    use_time_labels=False, use_percent_labels=False)
+        try:
+            monitor_directory(cfg)
+        except Exception as e:
+            if isinstance(e, deepl.DeepLException):
+                logger.error("DeepL API error occurred during file processing.")
             else:
-                # logger.info(f"Sleeping for {format_timespan(cfg.check_period_sec)}.")
-                if not did_flush:
-                    did_flush = flush_handlers()
-                time.sleep(check_period_sec)
+                logger.error("Unexpected error occurred during file processing.")
+            logger.error(f"{e}")
+            graceful_exit(2)  # Fatal error
+
 
     # close the global log file and any Apprise handlers and exit
     graceful_exit(0)
@@ -392,6 +349,53 @@ def main() -> None:
 # -----------------------------------------------------------------------
 # Core Functions
 # -----------------------------------------------------------------------
+
+def init_autotranslate() -> Config:
+    """
+    Initialize the autotranslate module.
+
+    - Sets up logging
+    - Registers exit hooks
+    - Loads environment variables
+    - Parses command-line arguments
+    - Builds and validates configuration
+    - Validates directories
+
+    Returns:
+        Tuple[Config, argparse.Namespace]: Configuration object and parsed arguments.
+    """
+    # init logger, and start output to STDOUT
+    setup_logging()
+
+    # Handle normal exits (atexit), and SIGINT/SIGTERM signals
+    setup_exit_hooks()
+
+    # read the commandline args and ENVs, setup cfg object
+    load_dotenv()  # by default, looks for a .env file in the current directory
+    args = parse_args()
+    # Merge ENVs with the args, args taking precedence
+        # Note: args.file does not migrate to cfg, as it is only for single file mode.
+    cfg = build_config(args)
+
+    # Now setup the global log file (note: log_dir may not exist, fails gracefully)
+    cfg.global_log_file_handler, cfg.global_log_file_path = add_global_file_logger(cfg.log_dir)
+
+    # Setup Apprise notifications on Errors
+    if APPRISE_AVAILABLE:
+        add_apprise_notifications_logger(cfg.notify_urls)
+
+    # debug stuff
+    if DEBUG_DUMP_VARS:
+        debug_dump(args, name="args")
+        debug_dump(cfg, name="Config")
+
+    # Ensure all config variables have valid values
+    cfg = validate_cfg_variables(cfg) # may raise ValueError()
+    # Ensure all dirs exist and are writable
+    validate_directories(cfg) # may raise ConfigurationError()
+
+    return cfg
+
 
 def setup_logging() -> None:
     """
@@ -434,24 +438,40 @@ def setup_exit_hooks():
     atexit.register(graceful_exit, 0)
 
     # Catch Ctrl-C (SIGINT) and container stop (SIGTERM)
-    def handle_signal(signum, _frame):
-        # newline
-        logging.error("")
+    if threading.current_thread() is threading.main_thread():
+        def handle_signal(signum, _frame):
+            # newline
+            logging.error("")
 
-        sig_name = signal.Signals(signum).name  # e.g. "SIGTERM"
-        if sig_name == "SIGTERM":
-            logging.error("Program received SIGTERM (signal 15): container stop or `docker kill` request.")
-        elif sig_name == "SIGINT":
-            logging.error("Program received SIGINT (signal 2): interrupted by Ctrl-C.")
-        else:
-            logging.error(f"Program shutting down due to {sig_name} (signal {signum}).")
-        graceful_exit(1)
+            sig_name = signal.Signals(signum).name  # e.g. "SIGTERM"
+            if sig_name == "SIGTERM":
+                logging.error("Program received SIGTERM (signal 15): container stop or `docker kill` request.")
+            elif sig_name == "SIGINT":
+                logging.error("Program received SIGINT (signal 2): interrupted by Ctrl-C.")
+            else:
+                logging.error(f"Program shutting down due to {sig_name} (signal {signum}).")
+            graceful_exit(1)
 
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
+        signal.signal(signal.SIGINT, handle_signal)
+        signal.signal(signal.SIGTERM, handle_signal)
 
 
-def build_config(args: argparse.Namespace) -> Config:
+def get_default_log_dir(failsafe: Optional[Union[Path, str]] = "/tmp") -> Path:
+    env_value = os.getenv("LOG_DIR")
+    if env_value:
+        return Path(env_value)
+
+    if is_in_container():
+        cfg_value = Config().log_dir
+    else:
+        cfg_value = ConfigNonContainerDefaults().log_dir
+    if cfg_value:
+        return Path(cfg_value)  
+
+    return Path(failsafe)
+
+
+def build_config(args: Optional[argparse.Namespace] = None) -> Config:
     """
     Build configuration object from CLI args and environment variables.
 
@@ -461,35 +481,43 @@ def build_config(args: argparse.Namespace) -> Config:
     Returns:
         Config: Fully populated configuration object.
     """
+    
+    # for validating and parsing notify_urls
     def parse_string_list(value: Optional[str]) -> List[str]:
         if not value:  # catches None or ""
             return []
         return [s.strip() for s in value.split(",") if s.strip()]
 
     # get default values
+    if not args:
+        args = EmptyArgs() # create an args object with all None values
     default = Config()
     new_cfg = Config()
 
     # make some changes if we're running outside a container
     if not is_in_container():
-        default.input_dir   = Path("./input")
-        default.output_dir  = Path("./output")
-        default.log_dir     = Path("./logs")
-        default.tmp_dir     = Path("/tmp")
+        default_special = ConfigNonContainerDefaults()
+        default.input_dir   = default_special.input_dir
+        default.output_dir  = default_special.output_dir
+        default.log_dir     = default_special.log_dir
+        default.tmp_dir     = default_special.tmp_dir 
 
 
     # Map CLI args and environment variables. CLI overrides env.
     new_cfg.input_dir           = Path( to_str( arg_or_env( args.input_dir,             "INPUT_DIR"),             str(default.input_dir) ))
     new_cfg.output_dir          = Path( to_str( arg_or_env( args.output_dir,            "OUTPUT_DIR"),            str(default.output_dir) ))
-    new_cfg.log_dir             = Path( to_str( arg_or_env( args.log_dir,               "LOG_DIR"),               str(default.log_dir) ))
-    new_cfg.tmp_dir             = default.tmp_dir
+    new_cfg.log_dir             = Path( to_str( arg_or_env( args.log_dir,               "LOG_DIR"),               str(get_default_log_dir()) ))
+    new_cfg.tmp_dir             = default.tmp_dir # is_in_container() decides this via the if statement above
     new_cfg.auth_key            = to_str(arg_or_env( args.auth_key,                     "DEEPL_AUTH_KEY"),           "")
     new_cfg.server_url          = to_str(arg_or_env( args.server_url,                   "DEEPL_SERVER_URL"),         "")
     new_cfg.target_lang         = to_str(arg_or_env( args.target_lang,                  "DEEPL_TARGET_LANG"),        str(default.target_lang) )
     new_cfg.usage_renewal_day   = to_int(arg_or_env( args.renewal_day,                  "DEEPL_USAGE_RENEWAL_DAY"),  default.usage_renewal_day)
-    new_cfg.check_period_min  = to_float(arg_or_env( args.check_every_x_minutes,        "CHECK_EVERY_X_MINUTES")  ,  default.check_period_min)
+    new_cfg.check_period_min    = to_float(arg_or_env( args.check_every_x_minutes,      "CHECK_EVERY_X_MINUTES")  ,  default.check_period_min)
     new_cfg.translate_filename  = to_bool(arg_or_env( args.translate_filename,          "TRANSLATE_FILENAME")     ,  default.translate_filename)
-    new_cfg.put_original_first     = to_bool(arg_or_env( args.original_before_translation, "ORIGINAL_BEFORE_TRANSLATION"), default.put_original_first)
+    new_cfg.put_original_first  = to_bool(arg_or_env( args.original_before_translation, "ORIGINAL_BEFORE_TRANSLATION"), default.put_original_first)
+
+    if args.file is not None:
+        new_cfg.source_file = Path(args.file)
 
     if APPRISE_AVAILABLE:
         # Convert strings to lists
@@ -525,10 +553,14 @@ def build_config(args: argparse.Namespace) -> Config:
 
     # all bounds checking done in validate_cfg_variables(cfg)
 
+    # set a default value, which is hopefully the value from the last run
+    # new_cfg.global_log_file_path = new_cfg.log_dir / f"_{__name__}.log"
+    new_cfg.global_log_file_path = new_cfg.log_dir /f"_{Path(__file__).stem}.log"
+
     return new_cfg
 
 
-def add_global_file_logger(log_dir: Path, log_filename: str = "_autotranslate.log") -> Tuple[Optional[logging.FileHandler], Optional[Path]]:
+def add_global_file_logger(log_dir: Path, log_filename: str = f"_{Path(__file__).stem}.log") -> Tuple[Optional[logging.FileHandler], Optional[Path]]:
     """
     Add a rotating global log file handler.
 
@@ -562,13 +594,14 @@ def add_global_file_logger(log_dir: Path, log_filename: str = "_autotranslate.lo
 
         logger.info(f"Creating global log file!")
         logger.info(f"\tGlobal Log file: {log_file}")
+
     except (OSError, PermissionError) as error:
-        g_fh = None # assign the None value if fileHandler failed
-        log_file = None # assign the None value if fileHandler failed
         logger.info(f"") # start on a fresh line (in-case the server crashed mid-line the previous run)
         logger.warning(f"Unable to write to global log file!")
         logger.warning(f"\tGlobal Log file: {log_file}")
         logger.warning(f"\t{error}")
+        g_fh = None # assign the None value if fileHandler failed
+        log_file = None # assign the None value if fileHandler failed
 
     # start the log
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -694,21 +727,15 @@ def validate_cfg_variables(cfg: Config) -> Config:
 
     # Add more validations as needed
 
-
     return cfg
 
 
-def get_valid_deepl_target_lang(lang_code: str) -> Optional[str]:
+def get_deepl_languages() -> Dict:
     """
-    Validate and normalize a DeepL target language code.
-    Can take code or language name, if the same as in the DeepL docs.
-    https://developers.deepl.com/docs/getting-started/supported-languages#translation-target-languages
-
-    Args:
-        lang_code (str): Language code to validate.
+    Retrieve supported DeepL target languages.
 
     Returns:
-        Optional[str]: Valid DeepL code, or None if unsupported.
+        Dict: Mapping of language codes to language names.
     """
 
     # https://developers.deepl.com/docs/getting-started/supported-languages#translation-target-languages
@@ -747,10 +774,29 @@ def get_valid_deepl_target_lang(lang_code: str) -> Optional[str]:
         "SV": "Swedish",
         "TR": "Turkish",
         "UK": "Ukrainian",
-        "ZH": "Chinese (Simplified)", #  (unspecified variant for backward compatibility; we recommend using ZH-HANS or ZH-HANT instead)
+        "ZH": "Chinese", #  (unspecified variant for backward compatibility; we recommend using ZH-HANS or ZH-HANT instead)
         "ZH-HANS": "Chinese (simplified)",
         "ZH-HANT": "Chinese (traditional)"
     }
+
+    return DEEPL_LANGUAGES
+
+
+def get_valid_deepl_target_lang(lang_code: str) -> Optional[str]:
+    """
+    Validate and normalize a DeepL target language code.
+    Can take code or language name, if the same as in the DeepL docs.
+    https://developers.deepl.com/docs/getting-started/supported-languages#translation-target-languages
+
+    Args:
+        lang_code (str): Language code to validate.
+
+    Returns:
+        Optional[str]: Valid DeepL code, or None if unsupported.
+    """
+
+    # https://developers.deepl.com/docs/getting-started/supported-languages#translation-target-languages
+    DEEPL_LANGUAGES = get_deepl_languages()
 
     # Exceptions
     if lang_code.strip().lower() in ("zh-cn", "zh", "chinese (simplified)"):
@@ -763,7 +809,6 @@ def get_valid_deepl_target_lang(lang_code: str) -> Optional[str]:
         lang_code = "en-gb"
     elif lang_code.strip().lower() in ("pt", "portuguese"):
         lang_code = "pt-pt"
-
 
     # Normal processing
     code_format = lang_code.strip().upper()
@@ -809,6 +854,7 @@ def validate_directories(cfg: Config) -> bool:
             else:
                 # sys.exit(2)  # Fatal error
                 can_continue = False # exit in the above calling function
+                raise ConfigurationError(error)
 
     return can_continue
 
@@ -832,6 +878,11 @@ def confirm_api_connection(auth_key: str, server_url: str = "") -> Optional[deep
         OSError: System/network error.
     """
 
+    def log_and_raise(msg: str, error: Exception):
+        logger.error(msg)
+        logger.error(f"\t{error}")
+        raise error
+
     translator = None
     # deepl.http_client.max_network_retries = 3 # default is 5 retires; I see no reason to change it
     try:
@@ -843,30 +894,20 @@ def confirm_api_connection(auth_key: str, server_url: str = "") -> Optional[deep
             logger.debug(f"\tUsing normal Web API server.")
             translator = deepl.DeepLClient(auth_key)
     except deepl.AuthorizationException as error:
-        logger.error("Authorization failed: invalid API key.")
-        logger.error(f"\t{error}")
-        translator = None
+        log_and_raise("Authorization failed: invalid API key.", error)
     except deepl.ConnectionException as error:
-        logger.error("Connection error: unable to reach DeepL API server.")
-        logger.error(f"\t{error}")
-        translator = None
+        log_and_raise("Connection error: unable to reach DeepL API server.", error)
     except deepl.DeepLException as error:
-        logger.error("DeepL API returned an error.")
-        logger.error(f"\t{error}")
-        translator = None
+        log_and_raise("DeepL API returned an error.", error)
     except ValueError as error:
-        logger.error("Invalid argument provided to DeepLClient.")
-        logger.error(f"\t{error}")
-        translator = None
+        log_and_raise("Invalid argument provided to DeepLClient.", error)
     except OSError as error:
-        logger.error("System/network error occurred while connecting to DeepL API.")
-        logger.error(f"\t{error}")
-        translator = None
+        log_and_raise("System/network error occurred while connecting to DeepL API.", error)
 
     return translator
 
 
-def process_file(file_path: Union[str, Path], cfg: Config, translator: Optional[deepl.DeepLClient]) -> bool:
+def process_file(file_path: Union[str, Path], cfg: Config) -> bool:
     """
     Process a single file for translation.
 
@@ -887,6 +928,8 @@ def process_file(file_path: Union[str, Path], cfg: Config, translator: Optional[
 
     # establish individual log file
     file_handler, log_file_path = add_file_logger(cfg.log_dir, file_path.name)
+    if cfg.callback_on_local_log_file:
+        cfg.callback_on_local_log_file(log_file_path)
     # report start of processing
     logger.debug(f"{'-'*75}")
     logger.info(f'Processing file: {file_path}') # note the usage on the un-cleaned file name for this log entry
@@ -906,12 +949,15 @@ def process_file(file_path: Union[str, Path], cfg: Config, translator: Optional[
     try:
         if input_file_path.exists():
             # translate the document
+            translator = confirm_api_connection(cfg.auth_key, cfg.server_url)
+            # Exception may be passed up from confirm_api_connection() and passed through to the calling subroutine to handle
             if translator is None:
                 logger.error("Translator object is None, cannot proceed with translation.")
+                return False
             else:
                 if file_handler is not None:
                     saved_level = file_handler.level
-                    file_handler.setLevel(logging.DEBUG) # turn of DEBUG logging to see the DeepL HTTP traffic
+                    file_handler.setLevel(logging.DEBUG) # turn on DEBUG logging to see the DeepL HTTP traffic
                 result = send_document_to_server(input_file_path, tmp_file_path, cfg.target_lang, translator)
                 if file_handler is not None:
                     file_handler.setLevel(saved_level)
@@ -927,11 +973,11 @@ def process_file(file_path: Union[str, Path], cfg: Config, translator: Optional[
             result = False
 
     except PermissionError as e:
-        print(f"Permission denied when accessing path")
-        print(f"Permission error: {e}")
+        logger.error(f"Permission denied when accessing path: {e}")
+        logger.error(f"Permission error: {e}")
         return False
     except OSError as e:
-        print(f"OS error: {e}")
+        logger.error(f"OS error: {e}")
         return False
     # QuotaExceededException may be passed up from send_document_to_server() and passed through to the calling subroutine to handle
     # getUsage() # annoyingly DeepL doesn't update their usage quickly.  So, this line got  removed as worthless.
@@ -945,6 +991,10 @@ def process_file(file_path: Union[str, Path], cfg: Config, translator: Optional[
         delete_file(input_file_path)  # may be the translated file in the tmp directory
         if file_path.exists():
             delete_file(file_path)        # may be the original file in the input directory
+        # report out to any extra-module callers that the file is done
+        if cfg.callback_on_file_complete:
+            cfg.callback_on_file_complete(output_file_path)
+
 
     # send the file via Apprise
     if output_file_path.exists() and APPRISE_AVAILABLE:
@@ -1320,6 +1370,90 @@ def send_apprise_message(title: str, body: str, attach: Optional[Path] = None) -
     return False
 
 
+def monitor_directory(cfg: Config, stop_monitoring: threading.Event = None) -> None:
+    """
+    Monitor the input directory for new files and process them.
+
+    Args:
+        cfg (Config): Configuration object.
+
+    Example for API usage:
+        stop_monitoring = threading.Event()
+
+        def run_monitor():
+            try:
+                cfg = autotranslate.init_autotranslate()
+                autotranslate.monitor_directory(cfg, stop_monitoring)
+            except Exception as e:
+                print(f"Monitor loop exited: {e}")
+
+        # start thread
+        monitor_thread = threading.Thread(target=run_monitor, daemon=True)
+        monitor_thread.start()
+
+        # later, on shutdown:
+        stop_monitoring.set()
+
+    """
+
+    logger.info(f"Monitoring directory for new files: {cfg.input_dir}")
+    logger.info(f"Check interval: {cfg.check_period_min} minutes")
+
+    # setup vars
+    check_period_sec = int(60 * cfg.check_period_min)  # convert minutes to seconds
+    did_flush = False # initialize flush flag for directory mode
+
+    while stop_monitoring is None or not stop_monitoring.is_set(): # loop forever
+        for file_path in cfg.input_dir.iterdir():
+            if file_path.is_dir():
+                continue
+            if file_path.name.startswith("."):
+                continue
+            if file_path.suffix.lower() == ".pdf": # only process PDF files
+                did_flush = False # reset flush flag for this file processing loop
+
+                try:
+                    process_file(file_path, cfg)
+                except QuotaExceededException as qe:
+                    logger.error("Translation quota exceeded during file processing.")
+                    logger.error(f"{qe}")
+
+                    if not did_flush:
+                        did_flush = flush_handlers() # flush any pending log messages before sleep
+                    wait_seconds = num_seconds_till_renewal(cfg.usage_renewal_day)
+                    if cfg.global_log_file_handler is not None:
+                        if wait_seconds >= 820800:        # ≥ 9.5 days
+                            num_graduations = 10
+                        elif wait_seconds >= 648000:      # 7.5–8.5 days
+                            num_graduations = 8
+                        elif wait_seconds >= 475200:      # 5.5–6.5 days
+                            num_graduations = 6
+                        elif wait_seconds >= 388800:      # 4.5–5.5 days
+                            num_graduations = 5
+                        else:                              # ≤ 4.5 days
+                            num_graduations = 4
+                        sleep_with_progressbar_countdown(cfg.global_log_file_handler, secs=wait_seconds, graduations=num_graduations)
+                    else:
+                        logger.info(f"Sleeping for {format_timespan(wait_seconds)} until usage renewal.")
+                        time.sleep(wait_seconds)
+
+                    time.sleep(5) # Delay for X seconds to prevent pounding on the server.
+                    break  # break out of the for loop to re-check the input directory after sleep
+
+
+        # sleep for the configured period before checking again
+        if (cfg.check_period_min >= 30) and (cfg.global_log_file_handler is not None):
+            if not did_flush:
+                did_flush = flush_handlers()
+            sleep_with_progressbar_countdown(cfg.global_log_file_handler, secs=check_period_sec,
+                                                use_time_labels=False, use_percent_labels=False)
+        else:
+            # logger.info(f"Sleeping for {format_timespan(cfg.check_period_sec)}.")
+            if not did_flush:
+                did_flush = flush_handlers()
+            time.sleep(check_period_sec)
+
+
 def num_seconds_till_renewal(renewal_date: int, default_days: int = 7) -> int:
     """
     Calculate seconds until next renewal of usage allowance.
@@ -1510,6 +1644,7 @@ def flush_handlers() -> bool:
 
     return did_flush
 
+
 def graceful_exit(exit_code: int = 0) -> None:
     """
     Flush and close all logging handlers before exiting.
@@ -1532,7 +1667,14 @@ def graceful_exit(exit_code: int = 0) -> None:
             logger.debug(f"Handler cleanup skipped: {e}")
 
     # now exit
-    sys.exit(exit_code)
+    # Only exit if this module is the main program
+    if __name__ == "__main__":
+        sys.exit(exit_code)
+    else:
+        # If imported, just return control to caller
+        logger.debug(f"graceful_exit called with code {exit_code}, not exiting (imported mode).")
+
+    return
 
 
 # -----------------------------------------------------------------------
