@@ -33,8 +33,8 @@ import shutil                                  # https://docs.python.org/3/libra
 import signal                                  # https://docs.python.org/3/library/signal.html
 import string                                  # https://docs.python.org/3/library/string.html
 import sys                                     # https://docs.python.org/3/library/sys.html
-import time                                    # https://docs.python.org/3/library/time.html
 import threading                               # https://docs.python.org/3/library/threading.html
+import time                                    # https://docs.python.org/3/library/time.html
 from dataclasses import dataclass, field       # https://docs.python.org/3/library/dataclasses.html
 from datetime import datetime                  # https://docs.python.org/3/library/datetime.html
 from pathlib import Path                       # https://docs.python.org/3/library/pathlib.html
@@ -119,12 +119,15 @@ class Config:
 @dataclass
 class ConfigNonContainerDefaults(Config):
     # Directory paths
-    input_dir:  Path = Path("./folders/inputDir")  # note: if outside a container, this is changed to ./input  in build_config()
-    output_dir: Path = Path("./folders/outputDir") # note: if outside a container, this is changed to ./output
-    log_dir:    Path = Path("./folders/logDir")    # note: if outside a container, this is changed to ./logs
+    input_dir:  Path = Path("./folders/input")  # note: if outside a container, this is changed to ./input  in build_config()
+    output_dir: Path = Path("./folders/output") # note: if outside a container, this is changed to ./output
+    log_dir:    Path = Path("./folders/logs")    # note: if outside a container, this is changed to ./logs
     tmp_dir:    Path = Path("/tmp")       # note: if outside a container, this is changed to /tmp
 
 class EmptyArgs(argparse.Namespace):
+    """
+    Empty arguments namespace with all attributes returning None.
+    """
     def __getattr__(self, name):
         return None
 
@@ -930,10 +933,22 @@ def process_file(file_path: Union[str, Path], cfg: Config) -> bool:
     file_handler, log_file_path = add_file_logger(cfg.log_dir, file_path.name)
     if cfg.callback_on_local_log_file:
         cfg.callback_on_local_log_file(log_file_path)
+        logger.debug(f"Called back to extra-module after creating local log file: {log_file_path}")
+
     # report start of processing
-    logger.debug(f"{'-'*75}")
-    logger.info(f'Processing file: {file_path}') # note the usage on the un-cleaned file name for this log entry
-    logger.debug(f"{'-'*75}")
+    logger.info(f"{'-'*75}")
+    logger.info(f'Processing file: {file_path.name}') # note the usage on the un-cleaned file name for this log entry
+    logger.info(f"{'-'*75}")
+    logger.info(f'Configuration values') # note the usage on the un-cleaned file name for this log entry
+    logger.info(f'\t Full input file: {file_path}')
+    logger.info(f'\t Output directory: {cfg.output_dir}')
+    logger.info(f'\t Temporary directory: {cfg.tmp_dir}')
+    logger.info(f'\t Log directory: {cfg.log_dir}')
+    logger.info(f'\t Target language: {cfg.target_lang}')
+    logger.info(f'\t Translate filename: {cfg.translate_filename}')
+    logger.info(f'\t Put original before translation: {cfg.put_original_first}')
+    logger.info(f"{'-'*75}")
+
 
     # create variables for all the files
     file_paths = generate_file_path_vars(file_path, cfg)
@@ -994,6 +1009,7 @@ def process_file(file_path: Union[str, Path], cfg: Config) -> bool:
         # report out to any extra-module callers that the file is done
         if cfg.callback_on_file_complete:
             cfg.callback_on_file_complete(output_file_path)
+            logger.debug(f"Called back to extra-module after completing file: {output_file_path}")
 
 
     # send the file via Apprise
@@ -1078,12 +1094,14 @@ def get_clean_input_file(file: Union[str, Path], tmp_dir: Path) -> Optional[Path
             tmp_dir.mkdir(parents=True, exist_ok=True)
             file_path = tmp_dir / clean_name
             shutil.copy2(file, file_path)
-            logger.info(f"Renamed input file to safe filename: {file_path}")
+            logger.info(f"Renamed input file to safe filename")
+            logger.info(f"\t Safe filename: {file_path}")
             return file_path
         else:
             return file_path
     except (OSError, PermissionError, FilenameCleanseError) as e:
         logger.error(f"Failed to rename input file to safe filename: {file_path.name}")
+        logger.info(f"\t Used filename: None")
         logger.error(f"\t{e}")
         return None  # return None if failure
 
@@ -1236,9 +1254,9 @@ def send_document_to_server(source_file: Union[str, Path], result_file: Union[st
     result_path = Path(result_file)
 
     logger.info(f'Uploading file to DeepL web API translation service.')
-    logger.debug(f"\tinput document:  {source_path}")
-    logger.debug(f"\toutput document: {result_path}")
-    logger.debug(f"\ttarget language: {target_language}")
+    logger.debug(f"\t input document    : {source_path}")
+    logger.debug(f"\t returned document : {result_path}")
+    logger.debug(f"\t target language   : {target_language}")
 
     result = False
     # QuotaExceededException  # annoyingly DeepL doesn't update their usage quickly.  So, we need to monitor and bubble up the error
@@ -1328,13 +1346,18 @@ def append_pdfs(original_pdf: Path, translated_pdf: Path, output_pdf: Path, put_
         if put_original_first:
             writer.append(original_pdf, "Original", None, True)
             writer.append(translated_pdf, "Translation", None, True)
+            logger.info(f'\t Original PDF  : {original_pdf}')
+            logger.info(f'\t Translated PDF: {translated_pdf}')
         else:
             writer.append(translated_pdf, "Translation", None, True)
             writer.append(original_pdf, "Original", None, True)
+            logger.info(f'\t Translated PDF: {translated_pdf}')
+            logger.info(f'\t Original PDF  : {original_pdf}')
 
         writer.write(output_pdf)
         writer.close()
-        logger.info('\tPDF merger successful.')
+        logger.info('\t PDF merger successful.')
+        logger.info(f'\t Output PDF    : {output_pdf}')
         return True
     except (FileNotFoundError, PermissionError, OSError, PdfReadError, ValueError, RuntimeError) as error:
         writer.close()
