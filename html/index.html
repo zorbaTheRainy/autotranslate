@@ -110,6 +110,49 @@
       border-radius: 6px;
       background-color: #fff;
     }
+
+    /* Selected file info UI */
+    .file-info {
+      display: none;
+      margin-top: 0.75em;
+      padding: 0.75em;
+      border: 1px solid #4E2A1E;
+      border-radius: 6px;
+      background-color: #fff;
+      color: #4E2A1E;
+      max-width: 600px;
+      margin-left: auto;
+      margin-right: auto;
+      box-sizing: border-box;
+    }
+    .file-info .name {
+      font-weight: bold;
+      display: inline-block;
+      margin-right: 0.5em;
+    }
+    .file-info .meta {
+      color: #6A3B2A;
+      font-size: 0.9em;
+      margin-right: 0.5em;
+    }
+    .file-info .actions {
+      display: inline-block;
+      vertical-align: middle;
+      margin-left: 0.5em;
+    }
+    .file-info .actions button {
+      background-color: #fff;
+      color: #4E2A1E;
+      border: 1px solid #4E2A1E;
+      padding: 0.35em 0.6em;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-left: 0.4em;
+      font-size: 0.9em;
+    }
+    .file-info .actions button:hover {
+      background-color: #f0e0da;
+    }
   </style>
 </head>
 <body>
@@ -119,9 +162,19 @@
 
     <!-- File Upload -->
     <label for="pdf-file">Upload PDF</label>
-    <div class="drop-zone" id="drop-zone">
+    <div class="drop-zone" id="drop-zone" aria-describedby="file-info" tabindex="0">
       Drag & drop your PDF here or click to browse
       <input type="file" id="pdf-file" name="pdf_file" accept=".pdf" hidden>
+    </div>
+
+    <!-- Selected file info UI -->
+    <div class="file-info" id="file-info" role="region" aria-live="polite">
+      <span class="name" id="file-name">No file selected</span>
+      <span class="meta" id="file-meta"></span>
+      <span class="actions">
+        <button type="button" id="change-file">Change</button>
+        <button type="button" id="remove-file">Remove</button>
+      </span>
     </div>
 
     <!-- Target Language -->
@@ -165,7 +218,7 @@
     <!-- BUTTONS ON SAME LINE -->
     <div class="link-buttons-row">
       <a href="/log/{{ global_log_filename }}" target="_blank">Service Log</a>
-      <a href="/log_file_web" target="_blank">Web Log</a>
+      <a href="/log/{{ web_log_filename }}" target="_blank">Web Log</a>
       <a href="https://www.deepl.com/en/your-account/summary" target="_blank">DeepL User Page</a>
     </div>
 
@@ -174,16 +227,51 @@
   {% if jobs_log_filename %}
   <div class="log-window">
     <h2>Last File Log</h2>
-    <iframe src="/log/{{ jobs_log_filename }}" width="100%" height="300px"></iframe>
+    <iframe src="/log/{{ jobs_log_filename }}?mode=realtime" width="100%" height="300px"></iframe>
   </div>
   {% endif %}
 
   <script>
-    // Drag & drop behavior
+    // Drag & drop behavior and selected-file UI
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('pdf-file');
+    const fileInfo = document.getElementById('file-info');
+    const fileNameEl = document.getElementById('file-name');
+    const fileMetaEl = document.getElementById('file-meta');
+    const changeBtn = document.getElementById('change-file');
+    const removeBtn = document.getElementById('remove-file');
 
+    function humanFileSize(bytes) {
+      if (bytes === 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(1024));
+      return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
+    }
+
+    function showFileInfo() {
+      const files = fileInput.files;
+      if (files && files.length > 0) {
+        const f = files[0];
+        fileNameEl.textContent = f.name;
+        fileMetaEl.textContent = humanFileSize(f.size);
+        fileInfo.style.display = 'block';
+      } else {
+        fileNameEl.textContent = 'No file selected';
+        fileMetaEl.textContent = '';
+        fileInfo.style.display = 'none';
+      }
+    }
+
+    // Click drop zone to open file picker
     dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        fileInput.click();
+      }
+    });
+
+    // Drag events
     dropZone.addEventListener('dragover', e => {
       e.preventDefault();
       dropZone.classList.add('dragover');
@@ -195,31 +283,77 @@
       e.preventDefault();
       dropZone.classList.remove('dragover');
       if (e.dataTransfer.files.length) {
+        // Assign files and update UI
         fileInput.files = e.dataTransfer.files;
+        showFileInfo();
       }
     });
 
-    // Dynamic polling to auto-open the translated PDF when it's ready
-    let pdfOpened = false;
+    // When user picks a file via the file input
+    fileInput.addEventListener('change', () => {
+      showFileInfo();
+    });
 
-    function checkForOutput() {
-      if (pdfOpened) return;
+    // Change button opens file picker again
+    changeBtn.addEventListener('click', () => {
+      fileInput.click();
+    });
 
-      fetch("/check_output?job_id=" + encodeURIComponent(job_id))
-        .then(r => r.json())
-        .then(data => {
-          if (data.ready && data.filename) {
-            pdfOpened = true;
-            window.open("/output/" + encodeURIComponent(data.filename), "_blank");
-          }
-        })
-        .catch(err => {
-          console.log("Error polling for output PDF:", err);
-        });
-    }
+    // Remove button clears selection
+    removeBtn.addEventListener('click', () => {
+      // Clear file input in a cross-browser way
+      try {
+        const dt = new DataTransfer();
+        fileInput.files = dt.files;
+      } catch (err) {
+        // Fallback for older browsers
+        fileInput.value = '';
+      }
+      showFileInfo();
+    });
 
-    // Poll every 2 seconds
-    setInterval(checkForOutput, 2000);
+    // Initialize UI on page load in case browser preserved selection
+    document.addEventListener('DOMContentLoaded', showFileInfo);
   </script>
+
+
+  {% if job_id %}
+  <script>
+    (function () {
+      const jobId = {{ job_id|tojson }};
+      if (!jobId) return;
+
+      let pdfOpened = false;
+      const POLL_INTERVAL_MS = 2000;
+      const POLL_TIMEOUT_MS = 10 * 60 * 1000;
+
+      async function pollForOutput() {
+        if (pdfOpened) return;
+        try {
+          const resp = await fetch('/check_output?job_id=' + encodeURIComponent(jobId), { cache: 'no-store' });
+          if (!resp.ok) throw new Error('Network response not ok: ' + resp.status);
+          const data = await resp.json();
+          if (data && data.ready && data.filename) {
+            pdfOpened = true;
+            window.open('/output/' + encodeURIComponent(data.filename), '_blank');
+            clearInterval(pollTimer);
+          }
+        } catch (err) {
+          console.error('Error polling for output PDF:', err);
+        }
+      }
+
+      pollForOutput();
+      const pollTimer = setInterval(pollForOutput, POLL_INTERVAL_MS);
+
+      setTimeout(() => {
+        if (!pdfOpened) {
+          clearInterval(pollTimer);
+          console.warn('Stopped polling for job', jobId, 'after timeout');
+        }
+      }, POLL_TIMEOUT_MS);
+    })();
+  </script>
+  {% endif %}
 </body>
 </html>
