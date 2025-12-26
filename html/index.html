@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Translate PDF</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #fff8f5;
+      color: #4E2A1E;
+      margin: 2em;
+    }
+    h1, h2 {
+      text-align: center;
+      color: #4E2A1E;
+    }
+    hr {
+      border: none;
+      border-top: 2px solid #4E2A1E;
+      margin: 0.3em auto 1em auto; /* tightened spacing */
+      width: 95%;
+    }
+    form {
+      max-width: 600px;
+      margin: auto;
+      padding: 1.5em;
+      border: 2px solid #4E2A1E;
+      border-radius: 8px;
+      background-color: #fdf3ef;
+    }
+    label {
+      font-weight: bold;
+      margin-right: 0.5em;
+    }
+    input[type="file"],
+    select {
+      width: 100%;
+      padding: 0.5em;
+      margin-top: 0.5em;
+      border: 1px solid #4E2A1E;
+      border-radius: 4px;
+      box-sizing: border-box;
+    }
+    .drop-zone {
+      border: 2px dashed #4E2A1E;
+      border-radius: 6px;
+      padding: 1em;
+      text-align: center;
+      color: #4E2A1E;
+      background-color: #fff;
+      cursor: pointer;
+      margin-top: 0.5em;
+    }
+    .drop-zone.dragover {
+      background-color: #f0e0da;
+    }
+    .form-section {
+      margin-top: 1em;
+      text-align: left;
+    }
+    .checkbox-group {
+      display: flex;
+      align-items: center;
+      margin-top: 0.5em;
+    }
+    .checkbox-group input {
+      margin-right: 0.5em;
+    }
+    .submit-row {
+      text-align: center;
+    }
+    button {
+      margin-top: 1.5em;
+      padding: 0.7em 1.5em;
+      border: none;
+      border-radius: 4px;
+      background-color: #4E2A1E;
+      color: #fff;
+      font-size: 1em;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #6A3B2A;
+    }
+
+    /* BUTTON ROW — now horizontal */
+    .link-buttons-row {
+      display: flex;
+      justify-content: center;
+      gap: 1em;
+      margin-top: 0.5em; /* tightened spacing */
+    }
+
+    .link-buttons-row a {
+      display: inline-block;
+      padding: 0.6em 1.2em;
+      background-color: #4E2A1E;
+      color: #fff;
+      text-decoration: none;
+      border-radius: 4px;
+    }
+    .link-buttons-row a:hover {
+      background-color: #6A3B2A;
+    }
+
+    .log-window {
+      margin-top: 2em;
+      border: 2px solid #4E2A1E;
+      padding: 1em;
+      border-radius: 6px;
+      background-color: #fff;
+    }
+  </style>
+</head>
+<body>
+  <form id="translate-form" name="translate-form" method="POST" action="/run" enctype="multipart/form-data">
+    <h1>Translate PDF</h1>
+    <hr>
+
+    <!-- File Upload -->
+    <label for="pdf-file">Upload PDF</label>
+    <div class="drop-zone" id="drop-zone">
+      Drag & drop your PDF here or click to browse
+      <input type="file" id="pdf-file" name="pdf_file" accept=".pdf" hidden>
+    </div>
+
+    <!-- Target Language -->
+    <div class="form-section">
+      <label for="target-language">Target Language:</label>
+      <select id="target-language" name="target_language">
+        {% for code, name in deepl_languages.items() %}
+          <option value="{{ code }}" {% if code == cfg.target_lang %}selected{% endif %}>
+            {{ name }}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <!-- Translate filename -->
+    <div class="form-section">
+      <div class="checkbox-group">
+        <input type="checkbox" id="translate-filename" name="translate_filename"
+               value="yes" {% if cfg.translate_filename %}checked{% endif %}>
+        <label for="translate-filename">Translate filename</label>
+      </div>
+    </div>
+
+    <!-- Include original -->
+    <div class="form-section">
+      <div class="checkbox-group">
+        <input type="checkbox" id="include-original" name="include_original"
+               value="yes" {% if cfg.put_original_first %}checked{% endif %}>
+        <label for="include-original">Include original before translated text</label>
+      </div>
+    </div>
+
+    <!-- Submit -->
+    <div class="submit-row">
+      <button type="submit">Translate</button>
+    </div>
+
+    <hr>
+    <h2 style="margin-bottom:0.3em;">DeepL Pages</h2>
+
+    <!-- BUTTONS ON SAME LINE -->
+    <div class="link-buttons-row">
+      <a href="/log/{{ global_log_filename }}" target="_blank">Service Log</a>
+      <a href="/log_file_web" target="_blank">Web Log</a>
+      <a href="https://www.deepl.com/en/your-account/summary" target="_blank">DeepL User Page</a>
+    </div>
+
+  </form>
+
+  {% if jobs_log_filename %}
+  <div class="log-window">
+    <h2>Last File Log</h2>
+    <iframe src="/log/{{ jobs_log_filename }}" width="100%" height="300px"></iframe>
+  </div>
+  {% endif %}
+
+  <script>
+    // Drag & drop behavior
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('pdf-file');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', e => {
+      e.preventDefault();
+      dropZone.classList.add('dragover');
+    });
+    dropZone.addEventListener('dragleave', () => {
+      dropZone.classList.remove('dragover');
+    });
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      if (e.dataTransfer.files.length) {
+        fileInput.files = e.dataTransfer.files;
+      }
+    });
+
+    // Dynamic polling to auto-open the translated PDF when it's ready
+    let pdfOpened = false;
+
+    function checkForOutput() {
+      if (pdfOpened) return;
+
+      fetch("/check_output?job_id=" + encodeURIComponent(job_id))
+        .then(r => r.json())
+        .then(data => {
+          if (data.ready && data.filename) {
+            pdfOpened = true;
+            window.open("/output/" + encodeURIComponent(data.filename), "_blank");
+          }
+        })
+        .catch(err => {
+          console.log("Error polling for output PDF:", err);
+        });
+    }
+
+    // Poll every 2 seconds
+    setInterval(checkForOutput, 2000);
+  </script>
+</body>
+</html>
