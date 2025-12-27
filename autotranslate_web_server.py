@@ -41,7 +41,7 @@ from typing import Dict, Optional, Union       # https://docs.python.org/3/libra
 # non-standard imports
 import deepl                                   # pip install --upgrade deepl   # https://github.com/DeepLcom/deepl-python
 from ansi2html import Ansi2HTMLConverter       # pip install ansi2html  # https://ansi2html.readthedocs.io/
-from flask import Flask, abort, render_template, render_template_string, request, redirect, url_for, send_file  # pip install flask # https://flask.palletsprojects.com/
+from flask import Flask, abort, render_template, request, redirect, url_for, send_file  # pip install flask # https://flask.palletsprojects.com/
 from werkzeug.utils import secure_filename     # pip install werkzeug  # https://werkzeug.palletsprojects.com/
 
 # intra-module imports
@@ -154,41 +154,48 @@ def index():
     # get the task ID if is was passed (e.g., /?job_id=2025_12_24_15_30_00_001); passed if redirected from /run, None otherwise
     job_id = request.args.get("job_id", None)
 
+    # get log paths
+    global_log_filename = None
+    with cfg_lock:
+        global_log_filename = cfg.global_log_file_path.name if (cfg and cfg.global_log_file_path) else None
+
+
     # if the whole program crashed (or just autotranslate's monitor
+
     if is_fatal_error:
         # General crash page
-        global_log_link = ""
-        with cfg_lock:
-            if cfg and cfg.global_log_file_path:
-                global_log_link = f'<a href="/log/{cfg.global_log_file_path.name}">View Global Log</a>'
-
-        return f"""
-        <html>
-        <head><title>Service Crashed</title></head>
-        <body>
-        <h1>Translation Service Crashed</h1>
-        <p>Error: {fatal_error_reason}</p>
-        <p>{global_log_link}</p>
-        <p><a href="/restart">Restart Service</a></p>
-        </body>
-        </html>
-        """, 500
+        return render_template(
+                                "error.html",
+                                title="Service Crashed",
+                                header="Translation Service Crashed",
+                                error_message=fatal_error_reason,
+                                global_log_filename=global_log_filename,
+                                web_log_filename=web_log_file_path.name if web_log_file_path else None,
+                            ), 500
 
     # if the quota has been exceeded, display an error page
     if is_quota_exceeded:
         renewal_secs = autotranslate.num_seconds_till_renewal(cfg.usage_renewal_day if cfg else 0)
-        return render_quota_exceeded_page(renewal_secs, "The translation quota has been exceeded. Please wait until the quota renews.")
+        renewal_time = time.time() + renewal_secs
+        return render_template(
+                                "error.html",
+                                title="Quota Exceeded",
+                                header="Translation Quota Exceeded",
+                                error_message="The translation quota has been exceeded. Please wait until the quota renews.",
+                                is_quota=True,
+                                renewal_time=renewal_time,
+                                global_log_filename=global_log_filename,
+                                web_log_filename=web_log_file_path.name if web_log_file_path else None,
+                            )
 
     # now if everything is OK, render the main page
-    with cfg_lock:
-        global_log_filename = cfg.global_log_file_path.name if (cfg and cfg.global_log_file_path) else None
-
     with scoreboard_lock:
         jobs_log_filename = None
         if job_id and (job_id in scoreboard):
             entry = scoreboard[job_id]
             if entry.log_file is not None:
                 jobs_log_filename = entry.log_file.name
+
     web_logger.info(f"\t Passed log file in scoreboard entry: {jobs_log_filename}")
 
 
@@ -373,56 +380,30 @@ def report_scoreboard():
     with scoreboard_lock:
         jobs = []
         for job_id, entry in scoreboard.items():
-            log_link = f'<a href="/download/log/{entry.log_file.name}" target="_blank">Log</a>' if entry.log_file and entry.log_file.exists() else 'N/A'
-            output_link = f'<a href="/output/{entry.output_file.name}" target="_blank">{entry.output_file.name}</a>' if entry.output_file and entry.output_file.exists() else 'N/A'
+            if entry.log_file:
+                if entry.log_file.exists():
+                    log_link = f'<a href="/download/log/{entry.log_file.name}" target="_blank">Log</a>'
+                else:
+                    log_link = 'Deleted'
+            else:
+                log_link = 'None'
+            
+            if entry.output_file:
+                if entry.output_file.exists():
+                    output_link = f'<a href="/download/output/{entry.output_file.name}" target="_blank">{entry.output_file.name}</a>'
+                else:
+                    output_link = f'{entry.output_file.name} (Deleted)'
+            else:
+                output_link = 'None'
+            
             jobs.append({
                 'id': job_id,
                 'input_file': entry.input_file.name if entry.input_file else 'N/A',
                 'log_link': log_link,
                 'output_link': output_link,
-                'status': 'Completed' if entry.output_file and entry.output_file.exists() else 'In Progress'
             })
 
-    html = """
-    <html>
-    <head>
-        <title>Translation Scoreboard</title>
-        <style>
-            table { border-collapse: collapse; width: 100%; }
-            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-            th { background-color: #f2f2f2; }
-        </style>
-    </head>
-    <body>
-        <h1>Translation Jobs Scoreboard</h1>
-        <table>
-            <tr>
-                <th>Job ID</th>
-                <th>Input File</th>
-                <th>Status</th>
-                <th>Log</th>
-                <th>Output</th>
-            </tr>
-    """
-
-    for job in jobs:
-        html += f"""
-            <tr>
-                <td>{job['id']}</td>
-                <td>{job['input_file']}</td>
-                <td>{job['status']}</td>
-                <td>{job['log_link']}</td>
-                <td>{job['output_link']}</td>
-            </tr>
-        """
-
-    html += """
-        </table>
-        <p><a href="/">Back to Main</a></p>
-    </body>
-    </html>
-    """
-    return html
+    return render_template("status.html", jobs=jobs)
 
 @app.route("/log/<log_filename>")
 def file_log(log_filename: str):
@@ -461,57 +442,19 @@ def file_log(log_filename: str):
     refresh_seconds = 30
     if mode == "realtime":
         refresh_seconds = 2
-    # render template with client-side JS that waits, HEADs the same URL,
-    # and only reloads if the server responds OK
-    template = """
-    <!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <title>Log: {{ log_filename }}</title>
-        <script>
-        (function() {
-          const refreshSeconds = {{ refresh_seconds }};
-          // Use the same path + query so HEAD hits this route
-          const checkUrl = {{ check_url | tojson }};
-          // Single delayed check; replace setTimeout with setInterval for repeated polling
-          setTimeout(async () => {
-            try {
-              const resp = await fetch(checkUrl, { method: 'HEAD', cache: 'no-store' });
-              if (resp.ok) {
-                // resource exists -> reload the page to get fresh content
-                window.location.reload();
-              } else {
-                // resource missing or server error -> do nothing
-                console.info('Not refreshing: server returned', resp.status);
-              }
-            } catch (err) {
-              // network error / server down -> do nothing
-              console.info('Not refreshing: fetch failed', err);
-            }
-          }, refreshSeconds * 1000);
-        })();
-        </script>
-      </head>
-      <body>
-        <h2>Log: <a href="/download/log/{{ log_filename }}" target="_blank">{{ log_filename }}</a></h2>
-        <pre>{{ tail | safe }}</pre>
-      </body>
-    </html>
-    """
-
     # pass the full path+query so the HEAD request checks the same resource
     check_url = request.path
     if request.query_string:
         check_url += "?" + request.query_string.decode("utf-8")
 
-    return render_template_string(
-        template,
-        refresh_seconds=refresh_seconds,
-        check_url=check_url,
-        log_filename=log_filename,
-        tail=tail
-    )
+    return render_template(
+                            "log.html",
+                            refresh_seconds=refresh_seconds,
+                            check_url=check_url,
+                            log_filename=log_filename,
+                            tail=tail,
+                            is_realtime = True if (mode == "realtime") else False,
+                        )
 
 
 
@@ -585,45 +528,7 @@ def run_process_file(file_path: Union[str, Path], config: autotranslate.Config) 
 # Core Functions
 # -----------------------------------------------------------------------
 
-def render_quota_exceeded_page(renewal_secs: int, error_msg: str) -> str:
-    """
-    Render the quota exceeded page with countdown including days.
-    """
-    renewal_time = time.time() + renewal_secs
-    html = f"""
-    <html>
-    <head>
-        <title>Quota Exceeded</title>
-        <script>
-            function updateCountdown() {{
-                const now = Date.now() / 1000;
-                const remaining = {renewal_time} - now;
-                if (remaining <= 0) {{
-                    location.reload();
-                }} else {{
-                    const days = Math.floor(remaining / 86400);
-                    const hours = Math.floor((remaining % 86400) / 3600);
-                    const minutes = Math.floor((remaining % 3600) / 60);
-                    const seconds = Math.floor(remaining % 60);
-                    let countdown = '';
-                    if (days > 0) countdown += days + 'd ';
-                    if (hours > 0 || days > 0) countdown += hours + 'h ';
-                    countdown += minutes + 'm ' + seconds + 's';
-                    document.getElementById('countdown').textContent = countdown.trim();
-                }}
-            }}
-            setInterval(updateCountdown, 1000);
-        </script>
-    </head>
-    <body>
-        <h1>Translation Quota Exceeded</h1>
-        <p>{error_msg}</p>
-        <p>Quota renews in: <span id="countdown"></span></p>
-        <p><a href="/log/{cfg.global_log_file_path.name if cfg and cfg.global_log_file_path else ''}">View Global Log</a></p>
-    </body>
-    </html>
-    """
-    return html
+
 
 
 def unique_timestamp_key(input_file: Optional[Path]) -> str:
