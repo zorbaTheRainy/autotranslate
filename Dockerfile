@@ -31,4 +31,4 @@ COPY html/index.html html/index.html
 # ENTRYPOINT ["./autotranslate.py"]
 ENTRYPOINT ["./autotranslate_web_server.py"]
 
-EXPOSE 5432
+EXPOSE 8010

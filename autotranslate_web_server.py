@@ -17,12 +17,12 @@ Features:
     - Directory monitoring mode for automated processing
     - Optional Apprise notifications for completed translations
 
-The server runs on port 5432 and integrates with the autotranslate core module for translation logic. It supports both single-file uploads and continuous directory watching modes.
+The server provides a GUI for the autotranslate core module for translation logic. It supports both single-file uploads and continuous directory watching modes.
 
 Usage:
     Run as main module to start the web server:
         python autotranslate_web_server.py
-    The web interface will be available at http://localhost:5432
+    The web interface will be available at http://localhost:8010 or APP_PORT
 """
 
 # standard libraries
@@ -68,6 +68,7 @@ class ScoreboardEntry:
 app = Flask(__name__, template_folder="html")
 web_logger = logging.getLogger("web")
 web_log_file_path: Optional[Path] = None
+APP_PORT = 8010
 # to run autotranslate in directory monitor mode
 monitor_thread: Optional[threading.Thread] = None
 monitor_thread_lock = threading.Lock()
@@ -115,7 +116,7 @@ def main() -> None:
     add_web_file_logging()
 
     # Start web server
-    app.run(host="0.0.0.0", port=5432)
+    app.run(host="0.0.0.0", port=APP_PORT)
 
 
 
@@ -747,7 +748,7 @@ def add_web_file_logging():
 
 def setup_web_exit_hooks():
     """
-    Setup web exit hooks.
+    Setup exit hooks.
     """
     # setup web server exit hooks
     # Handle normal exits (atexit), and SIGINT/SIGTERM signals
