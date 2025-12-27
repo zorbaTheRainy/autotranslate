@@ -40,6 +40,7 @@ from typing import Dict, Optional, Union       # https://docs.python.org/3/libra
 
 # non-standard imports
 import deepl                                   # pip install --upgrade deepl   # https://github.com/DeepLcom/deepl-python
+from ansi2html import Ansi2HTMLConverter       # pip install ansi2html  # https://ansi2html.readthedocs.io/
 from flask import Flask, abort, render_template, render_template_string, request, redirect, url_for, send_file  # pip install flask # https://flask.palletsprojects.com/
 from werkzeug.utils import secure_filename     # pip install werkzeug  # https://werkzeug.palletsprojects.com/
 
@@ -449,7 +450,12 @@ def file_log(log_filename: str):
     with open(log_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
-    tail = "".join(lines[-200:])
+    # last 200 lines
+    tail_raw = "".join(lines[-200:])
+    
+    # clean ANSI colour codes
+    conv = Ansi2HTMLConverter(inline=True)
+    tail = conv.convert(tail_raw, full=False)
 
     refresh_seconds = 30
     if mode == "realtime":
@@ -488,7 +494,7 @@ def file_log(log_filename: str):
       </head>
       <body>
         <h2>Log: <a href="/download/log/{{ log_filename }}" target="_blank">{{ log_filename }}</a></h2>
-        <pre>{{ tail }}</pre>
+        <pre>{{ tail | safe }}</pre>
       </body>
     </html>
     """
