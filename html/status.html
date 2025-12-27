@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Translation Jobs History</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #fff8f5;
+      color: #4E2A1E;
+      margin: 2em;
+    }
+    h1, h2 {
+      text-align: center;
+      color: #4E2A1E;
+    }
+    hr {
+      border: none;
+      border-top: 2px solid #4E2A1E;
+      margin: 0.3em auto 1em auto;
+      width: 95%;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: auto;
+      border: 2px solid #4E2A1E;
+      background-color: #fdf3ef;
+    }
+    th, td {
+      border: 1px solid #4E2A1E;
+      padding: 8px;
+      text-align: left;
+    }
+    th {
+      background-color: #4E2A1E;
+      color: #fff;
+    }
+    tr:nth-child(even) {
+      background-color: #fff;
+    }
+    tr:nth-child(odd) {
+      background-color: #f0e0da;
+    }
+    .link-buttons-row {
+      display: flex;
+      justify-content: center;
+      gap: 1em;
+      margin-top: 1em;
+    }
+    .link-buttons-row a {
+      display: inline-block;
+      padding: 0.6em 1.2em;
+      background-color: #4E2A1E;
+      color: #fff;
+      text-decoration: none;
+      border-radius: 4px;
+    }
+    .link-buttons-row a:hover {
+      background-color: #6A3B2A;
+    }
+  </style>
+</head>
+<body>
+  <h1>Translation Jobs History</h1>
+  <hr>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Job ID</th>
+        <th>Input File</th>
+        <th>Log</th>
+        <th>Output</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td>{{ job.id }}</td>
+        <td>{{ job.input_file }}</td>
+        <td>{{ job.log_link|safe }}</td>
+        <td>{{ job.output_link|safe }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="link-buttons-row">
+    <a href="/">Back to Main</a>
+  </div>
+</body>
+</html>

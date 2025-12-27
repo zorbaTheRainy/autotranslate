@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Log: {{ log_filename }}</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #fff8f5;
+      color: #4E2A1E;
+      margin: 2em;
+    }
+    h1, h2 {
+      text-align: center;
+      color: #4E2A1E;
+    }
+    hr {
+      border: none;
+      border-top: 2px solid #4E2A1E;
+      margin: 0.3em auto 1em auto;
+      width: 95%;
+    }
+    .log-container {
+      max-width: 1200px;
+      margin: auto;
+      padding: 1.5em;
+      border: 2px solid #4E2A1E;
+      border-radius: 8px;
+      background-color: #fdf3ef;
+      padding-top: 0.5em; /* or 0 */
+    }
+    .log-header {
+      text-align: center;
+      margin-bottom: 1em;
+    }
+    .log-header h2 {
+      margin-top: 0;
+    }
+    .log-header a {
+      color: #4E2A1E;
+      text-decoration: none;
+      font-weight: bold;
+    }
+    .log-header a:hover {
+      text-decoration: underline;
+    }
+    pre {
+      background-color: #fff;
+      border: 1px solid #4E2A1E;
+      border-radius: 4px;
+      padding: 1em;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      font-family: 'Courier New', monospace;
+      font-size: 0.9em;
+      color: #4E2A1E;
+    }
+    .link-buttons-row {
+      display: flex;
+      justify-content: center;
+      gap: 1em;
+      margin-top: 1em;
+    }
+    .link-buttons-row a {
+      display: inline-block;
+      padding: 0.6em 1.2em;
+      background-color: #4E2A1E;
+      color: #fff;
+      text-decoration: none;
+      border-radius: 4px;
+    }
+    .link-buttons-row a:hover {
+      background-color: #6A3B2A;
+    }
+  </style>
+  <script>
+  (function() {
+    const refreshSeconds = {{ refresh_seconds }};
+    // Use the same path + query so HEAD hits this route
+    const checkUrl = {{ check_url | tojson }};
+    // Single delayed check; replace setTimeout with setInterval for repeated polling
+    setTimeout(async () => {
+      try {
+        const resp = await fetch(checkUrl, { method: 'HEAD', cache: 'no-store' });
+        if (resp.ok) {
+          // resource exists -> reload the page to get fresh content
+          window.location.reload();
+        } else {
+          // resource missing or server error -> do nothing
+          console.info('Not refreshing: server returned', resp.status);
+        }
+      } catch (err) {
+        // network error / server down -> do nothing
+        console.info('Not refreshing: fetch failed', err);
+      }
+    }, refreshSeconds * 1000);
+  })();
+  </script>
+</head>
+<body>
+  <div class="log-container">
+    <div class="log-header">
+      <h2>Log: <a href="/download/log/{{ log_filename }}" target="_blank">{{ log_filename }}</a></h2>
+    </div>
+    <pre>{{ tail | safe }}</pre>
+  </div>
+
+  {% if not is_realtime %}
+  <div class="link-buttons-row">
+    <a href="/">Back to Main</a>
+  </div>
+  {% endif %}
+</body>
+</html>
