@@ -1,5 +1,29 @@
 #!/usr/bin/env python3
 
+"""
+autotranslate_web_server.py
+===========================
+
+A Flask-based web server interface for the autotranslate library, enabling PDF translation via web uploads.
+
+This module provides a user-friendly web interface for translating PDF documents using the DeepL API. Users can upload files through a web form, specify translation options (target language, filename translation, original placement), and monitor translation progress in real-time.
+
+Features:
+    - Web upload form for PDF files with configurable options
+    - Background processing of translations using threading
+    - Real-time job status tracking and scoreboard
+    - Interactive log viewing with auto-refresh capability
+    - Quota exceeded handling with renewal countdown
+    - Directory monitoring mode for automated processing
+    - Optional Apprise notifications for completed translations
+
+The server runs on port 5432 and integrates with the autotranslate core module for translation logic. It supports both single-file uploads and continuous directory watching modes.
+
+Usage:
+    Run as main module to start the web server:
+        python autotranslate_web_server.py
+    The web interface will be available at http://localhost:5432
+"""
 
 # standard libraries
 import atexit                                  # https://docs.python.org/3/library/atexit.html
@@ -28,6 +52,7 @@ import autotranslate
 # -----------------------------------------------------------------------
 @dataclass
 class ScoreboardEntry:
+    """Represents a single job's important data."""
     id: Optional[str] = None
     input_file: Optional[Path] = None
     log_file: Optional[Path] = None
@@ -37,17 +62,23 @@ class ScoreboardEntry:
 # -----------------------------------------------------------------------
 # Module-level variables (accessible to all functions in this file)
 # -----------------------------------------------------------------------
+
+# web page vars
 app = Flask(__name__, template_folder="html")
 web_logger = logging.getLogger("web")
+web_log_file_path: Optional[Path] = None
+# to run autotranslate in directory monitor mode
 monitor_thread: Optional[threading.Thread] = None
 monitor_thread_lock = threading.Lock()
 stop_monitoring = threading.Event()
+# Config sent back from autotranslate
 cfg_is_inited: bool = False
 cfg: Optional[autotranslate.Config] = None
 cfg_lock = threading.Lock()
+# a list of all jobs run via the webpage (and their data)
 scoreboard: Dict[str, ScoreboardEntry] = {}
 scoreboard_lock = threading.Lock()
-web_log_file_path: Optional[Path] = None
+# error flags
 is_quota_exceeded: bool = False
 is_fatal_error: bool = False
 fatal_error_reason: Optional[str] = None
@@ -62,7 +93,7 @@ def main() -> None:
 
     Sets up logging, starts monitor thread, waits for init, adds file logging, runs Flask app.
     """
-    global monitor_thread
+    global monitor_thread # pylint: disable=global-statement
 
     # init logger, and start output to STDOUT
     setup_web_logging()
@@ -488,7 +519,7 @@ def run_directory_monitor():
     Initializes config and starts monitoring.
     If fails, sets crash state.
     """
-    global cfg, cfg_is_inited, is_fatal_error, fatal_error_reason
+    global cfg, cfg_is_inited, is_fatal_error, fatal_error_reason  # pylint: disable=global-statement
     try:
         web_logger.info("Monitor loop started")
         with cfg_lock:
@@ -512,7 +543,14 @@ def run_directory_monitor():
 
 
 def run_process_file(file_path: Union[str, Path], config: autotranslate.Config) -> bool:
-    global is_quota_exceeded, is_fatal_error, fatal_error_reason
+    """
+    Run autotranslate.process_file() and update global error flags based on the outcome.
+
+    Returns:
+        True if processing succeeds, False if a quota error, DeepL error, or unexpected
+        exception occurs. Also updates global flags for fatal errors and quota exhaustion.
+    """
+    global is_quota_exceeded, is_fatal_error, fatal_error_reason  # pylint: disable=global-statement
 
     try:
         autotranslate.process_file(file_path, config)
@@ -621,7 +659,7 @@ def add_web_file_logging():
     """
     Add rotating file handler for web server logs.
     """
-    global web_log_file_path
+    global web_log_file_path  # pylint: disable=global-statement
     with cfg_lock:
         log_dir = cfg.log_dir if cfg else None
     if not log_dir:
@@ -670,6 +708,7 @@ def add_web_file_logging():
 
     # Filter to throttle /log endpoint requests from werkzeug
     class LogEndpointFilter(logging.Filter):
+        '''Filter to throttle repeated /log/filename requests from werkzeug.'''
         def __init__(self):
             super().__init__()
             self.last_logged = {}  # filename -> last logged timestamp
@@ -749,7 +788,7 @@ def graceful_exit(exit_code: int = 0) -> None:
             h.flush()
             h.close()
             web_logger.removeHandler(h)
-        except Exception as e:
+        except Exception:
             pass
 
     # now exit
