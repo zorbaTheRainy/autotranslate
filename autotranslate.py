@@ -1002,6 +1002,7 @@ def process_file(file_path: Union[str, Path], cfg: Config) -> bool:
 
     # clean up the old files, make sure that input_file_path aren't re-translated at another date
     if output_file_path.exists(): # if we successfully created the output_file_path
+        logger.info(f"Cleaning up input & temporary files.")
         delete_file(tmp_file_path)
         delete_file(input_file_path)  # may be the translated file in the tmp directory
         if file_path.exists():
@@ -1019,7 +1020,9 @@ def process_file(file_path: Union[str, Path], cfg: Config) -> bool:
                                 attach=output_file_path)
 
 
+    logger.info(f"{'-'*75}")
     logger.info(f'Finished processing file.')
+    logger.info(f'\t Translated output file: {output_file_path}')
 
     # close the individual log file
     close_file_logger(file_handler, log_file_path)
