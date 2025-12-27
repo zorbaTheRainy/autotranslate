@@ -70,6 +70,7 @@ logger = logging.getLogger()
 # DEBUG variables
 DEBUG_DUMP_VARS = True  # Set to True to enable config/args debug dump
 DEBUG_NO_SEND_FILE = True  # Set to True to skip sending translated files (for testing)
+DEBUG_UNOBSCURE_API_KEY = True  # Set to True to show the actual API key (for testing)
 
 
 # -----------------------------------------------------------------------
@@ -459,7 +460,7 @@ def setup_exit_hooks():
         signal.signal(signal.SIGTERM, handle_signal)
 
 
-def get_default_log_dir(failsafe: Optional[Union[Path, str]] = "/tmp") -> Path:
+def get_default_log_dir(failsafe: Union[Path, str] = "/tmp") -> Path:
     env_value = os.getenv("LOG_DIR")
     if env_value:
         return Path(env_value)
@@ -469,7 +470,7 @@ def get_default_log_dir(failsafe: Optional[Union[Path, str]] = "/tmp") -> Path:
     else:
         cfg_value = ConfigNonContainerDefaults().log_dir
     if cfg_value:
-        return Path(cfg_value)  
+        return Path(cfg_value)
 
     return Path(failsafe)
 
@@ -484,7 +485,7 @@ def build_config(args: Optional[argparse.Namespace] = None) -> Config:
     Returns:
         Config: Fully populated configuration object.
     """
-    
+
     # for validating and parsing notify_urls
     def parse_string_list(value: Optional[str]) -> List[str]:
         if not value:  # catches None or ""
@@ -503,7 +504,7 @@ def build_config(args: Optional[argparse.Namespace] = None) -> Config:
         default.input_dir   = default_special.input_dir
         default.output_dir  = default_special.output_dir
         default.log_dir     = default_special.log_dir
-        default.tmp_dir     = default_special.tmp_dir 
+        default.tmp_dir     = default_special.tmp_dir
 
 
     # Map CLI args and environment variables. CLI overrides env.
@@ -857,7 +858,7 @@ def validate_directories(cfg: Config) -> bool:
             else:
                 # sys.exit(2)  # Fatal error
                 can_continue = False # exit in the above calling function
-                raise ConfigurationError(error)
+                raise ConfigurationError(str(error))
 
     return can_continue
 
@@ -931,7 +932,7 @@ def process_file(file_path: Union[str, Path], cfg: Config) -> bool:
 
     # establish individual log file
     file_handler, log_file_path = add_file_logger(cfg.log_dir, file_path.name)
-    if cfg.callback_on_local_log_file:
+    if cfg.callback_on_local_log_file and log_file_path:
         cfg.callback_on_local_log_file(log_file_path)
         logger.debug(f"Called back to extra-module after creating local log file: {log_file_path}")
 
@@ -1396,7 +1397,7 @@ def send_apprise_message(title: str, body: str, attach: Optional[Path] = None) -
     return False
 
 
-def monitor_directory(cfg: Config, stop_monitoring: threading.Event = None) -> None:
+def monitor_directory(cfg: Config, stop_monitoring: Optional[threading.Event] = None) -> None:
     """
     Monitor the input directory for new files and process them.
 
@@ -1842,7 +1843,11 @@ def arg_or_env(arg: Optional[str], env_name: str) -> Optional[str]:
     """
     env_val = os.getenv(env_name)
     if DEBUG_DUMP_VARS:
-        logger.debug(f"arg_or_env: arg={arg!r:<25}, env_name={env_name:<30}, env_val={env_val}")  # Debug print
+        if (not DEBUG_UNOBSCURE_API_KEY) and (env_name == "DEEPL_AUTH_KEY"):
+            obscured_value = re.sub(r"[A-Za-z0-9]", "*", env_val or "")
+            logger.debug(f"arg_or_env: arg={arg!r:<25}, env_name={env_name:<30}, env_val={obscured_value}")  # Debug print
+        else:
+            logger.debug(f"arg_or_env: arg={arg!r:<25}, env_name={env_name:<30}, env_val={env_val}")  # Debug print
     if arg is not None:
         return arg
     elif env_val is not None:
@@ -1864,9 +1869,13 @@ def debug_dump(obj: Any, name="Object") -> None:
 
     if isinstance(obj, dict):
         for key, value in obj.items():
+            if (not DEBUG_UNOBSCURE_API_KEY) and ((key == "DEEPL_AUTH_KEY") or (key == "auth_key")):
+                value = re.sub(r"[A-Za-z0-9]", "*", value or "")
             logger.debug(f"{key:<20}: {value!r}")
     elif hasattr(obj, "__dict__"):
         for key, value in vars(obj).items():
+            if (not DEBUG_UNOBSCURE_API_KEY) and ((key == "DEEPL_AUTH_KEY") or (key == "auth_key")):
+                value = re.sub(r"[A-Za-z0-9]", "*", value or "")
             logger.debug(f"{key:<20}: {value!r}")
     else:
         logger.debug(f"(Unsupported type: {type(obj).__name__})")

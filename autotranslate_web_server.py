@@ -17,6 +17,7 @@ from typing import Dict, Optional, Union       # https://docs.python.org/3/libra
 # non-standard imports
 import deepl                                   # pip install --upgrade deepl   # https://github.com/DeepLcom/deepl-python
 from flask import Flask, abort, render_template, render_template_string, request, redirect, url_for, send_file  # pip install flask # https://flask.palletsprojects.com/
+from werkzeug.utils import secure_filename     # pip install werkzeug  # https://werkzeug.palletsprojects.com/
 
 # intra-module imports
 import autotranslate
@@ -178,11 +179,18 @@ def run_translation():
     Returns:
         Redirect to index with job_id.
     """
+    assert cfg is not None, "Config=None should have been guarded against by ensure_initialized()"
+
     uploaded = request.files.get("pdf_file")
     if not uploaded:
         return "No PDF uploaded", 400
+    # clean uploaded filename
+    uploaded_filename = uploaded.filename
+    if uploaded_filename is None:
+        uploaded_filename = ""
+    safe_name = secure_filename(uploaded_filename)
+    input_path = cfg.tmp_dir / safe_name
     # upload file to the tmp directory
-    input_path = cfg.tmp_dir / uploaded.filename
     uploaded.save(input_path)
 
     # Clone cfg for this run
@@ -215,12 +223,7 @@ def run_translation():
             entry = scoreboard.get(scoreboard_key)
             if entry is not None:
                 entry.log_file = path
-        web_logger.info(f"Per-file log created: {path}")
-        with scoreboard_lock:
-            entry_log = scoreboard.get(scoreboard_key).log_file
-            web_logger.info(f"\t Captured log file in scoreboard entry: {entry_log}")
-
-
+                web_logger.info(f"\t Captured log file in scoreboard entry: {entry.log_file}")
     new_cfg.callback_on_local_log_file = capture_log_path
 
     # Callback: fires when translation is complete
@@ -230,7 +233,6 @@ def run_translation():
             if entry is not None:
                 entry.output_file = path
         web_logger.info(f"Output PDF created: {path}")
-
     new_cfg.callback_on_file_complete = capture_output_pdf
 
     # Run translation in background
@@ -281,6 +283,8 @@ def serve_output(filename: str):
     Returns:
         Flask response with the file.
     """
+    assert cfg is not None, "Config=None should have been guarded against by ensure_initialized()"
+
     with cfg_lock:
         path = cfg.output_dir / filename
 
@@ -317,7 +321,7 @@ def download(dl_type: str, filename: str):
     if (not dir_path.exists()) or (not dir_path.is_dir()):
         abort(404)
 
-    # build the candidate file path 
+    # build the candidate file path
     path = dir_path / filename
 
     # final checks: file must exist and be a regular file
@@ -431,7 +435,7 @@ def file_log(log_filename: str):
         (function() {
           const refreshSeconds = {{ refresh_seconds }};
           // Use the same path + query so HEAD hits this route
-          const checkUrl = {{ check_url|tojson }};
+          const checkUrl = {{ check_url | tojson }};
           // Single delayed check; replace setTimeout with setInterval for repeated polling
           setTimeout(async () => {
             try {
@@ -507,11 +511,11 @@ def run_directory_monitor():
         fatal_error_reason = str(e)
 
 
-def run_process_file(file_path: Union[str, Path], confg: autotranslate.Config) -> bool:
+def run_process_file(file_path: Union[str, Path], config: autotranslate.Config) -> bool:
     global is_quota_exceeded, is_fatal_error, fatal_error_reason
 
     try:
-        autotranslate.process_file(file_path, confg)
+        autotranslate.process_file(file_path, config)
         return True
     except Exception as e:
         # this is really not a big deal for a 1-and-done file translation

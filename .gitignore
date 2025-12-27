@@ -18,3 +18,4 @@ tmp*.*
 .env
 test
 folders/
+stack.env
