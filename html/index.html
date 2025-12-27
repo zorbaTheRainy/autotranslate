@@ -17,7 +17,7 @@
     hr {
       border: none;
       border-top: 2px solid #4E2A1E;
-      margin: 0.3em auto 1em auto; /* tightened spacing */
+      margin: 0.3em auto 1em auto;
       width: 95%;
     }
     form {
@@ -83,12 +83,11 @@
       background-color: #6A3B2A;
     }
 
-    /* BUTTON ROW — now horizontal */
     .link-buttons-row {
       display: flex;
       justify-content: center;
       gap: 1em;
-      margin-top: 0.5em; /* tightened spacing */
+      margin-top: 0.5em;
     }
 
     .link-buttons-row a {
@@ -215,10 +214,11 @@
     <hr>
     <h2 style="margin-bottom:0.3em;">DeepL Pages</h2>
 
-    <!-- BUTTONS ON SAME LINE -->
+    <!-- Buttons -->
     <div class="link-buttons-row">
       <a href="/log/{{ global_log_filename }}" target="_blank">Service Log</a>
       <a href="/log/{{ web_log_filename }}" target="_blank">Web Log</a>
+      <a href="/status" target="_blank">History</a>
       <a href="https://www.deepl.com/en/your-account/summary" target="_blank">DeepL User Page</a>
     </div>
 
@@ -320,7 +320,7 @@
   {% if job_id %}
   <script>
     (function () {
-      const jobId = {{ job_id|tojson }};
+      const jobId = {{ job_id | tojson }};
       if (!jobId) return;
 
       let pdfOpened = false;
