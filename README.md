@@ -1,9 +1,10 @@
 # AutoTranslate
 
-AutoTranslate is a small lightweight application that uses the DeepL API to translate PDF documents from one language to another.
+AutoTranslate is a small lightweight application that uses the DeepL API to translate PDF documents from one language to another in a layout preserving way.
 
 ## Features
 
+- **NEW in v2.4**: Web interface for file uploads and job monitoring
 - Monitors a directory for newly added PDF files
 - Translates those files via the DeepL API
 - Appends the translation document and original (untranslated) document into a single file
@@ -12,8 +13,7 @@ AutoTranslate is a small lightweight application that uses the DeepL API to tran
 - Generates log files in case of any errors occur
 - If you have exceeded your DeepL API usage for the month, the program will sleep until the next month
 - Authentication (API Key) via Docker ENV variables
-- No web interface
-- CLI interface to handle one file at a time
+- CLI interface or Web UI to handle one file at a time or directory monitoring
 
 AutoTranslate doesn't cost any money.  The DeepL API has a free option.  However, the DeepL API has a usage limit (per month) and you can pay extra to DeepL to increase that monthly limit.
 
@@ -47,7 +47,7 @@ If you want to run the Python script outside of Docker, just copy it from [the G
 
 ### Docker
 
-The simplest way to use AutoTranslate is to run the docker container. 
+The simplest way to use AutoTranslate is to run the docker container. Starting with v2.4.0, the container includes a web server interface for easy file uploads and monitoring. 
 
 Before we get to the Docker instructions, you should make sure everything is set up.
 
@@ -85,6 +85,8 @@ I use compose.  Conversion of the below into the command line command is "left a
 				- /volume1/translate/:/inputDir                                       # (mandatory) The directory where you put the un-translated file
 				- /volume1/consume/:/outputDir                                        # (mandatory) The directory where AutoTranslate will put the translated file
 				- /volume1/autotranslate_logs/:/logDir                                # (near mandatory) The directory where log files are stored, 1 per input file and a master log file
+			ports:
+				- "8881:8010"                                                         # (optional) Map web interface to host port 8881
 
 
 
@@ -106,6 +108,7 @@ The only **mandatory** variable is the DEEPL_AUTH_KEY.
 | INPUT_DIR      | "/inputDir/" in a container <br>"./input/" outside a container   | (v2.3.0+) The directory where you put the un-translated PDF files.  Non-PDF files will be ignored. |
 | OUTPUT_DIR      | "/outputDir/" in a container <br>"./output/" outside a container     | (v2.3.0+) The directory where AutoTranslate will put the translated PDF files, which have been appended to the original un-translated file. |
 | LOG_DIR      | "/logDir/" in a container <br>"./logs/" outside a container     | (v2.3.0+) The directory where log files are stored, 1 per input file and a master log file (`_autotranslate.log`). |
+| AT_BASE_DIR      | "."    | (v2.4.0+) Base directory for input/output/logs when running outside containers. Used as prefix for relative paths. |
 
 #### Volumes
 | Volume           | Purpose             |
@@ -169,7 +172,43 @@ In general, CLI switches override ENV variables.
 
 Using `--original-before-translation` and `--translate-filename` are the same as setting their ENVs to `1` or `True`.
 
-`--notify-urls` and the ENV `NOTIFY_URLS` are actually merged.  So, the resultant URL list will be the combination of both values.  However, invalid Apprise URLs are discarded.  
+`--notify-urls` and the ENV `NOTIFY_URLS` are actually merged.  So, the resultant URL list will be the combination of both values.  However, invalid Apprise URLs are discarded.
+
+### Web Interface (v2.4.0+)
+
+AutoTranslate now includes a built-in web server that provides a user-friendly interface for uploading and translating PDF files.
+
+Note: Translated files are output  **both** to the web browser **and** the output directory (as per the pre-2.4.0 behavior).
+
+#### Starting the Web Server
+
+**Docker:**
+The Docker container now runs the web server and in directory monitoring mode, simultaneously. Access it at `http://localhost:8881` (or your mapped port).
+
+**URL:**
+The web interface will be available at `http://localhost:8010`.
+The normal script behaviour, via the input/output directories, is still available.
+
+#### Web Features
+
+- **File Upload**: Drag-and-drop PDF files or browse to select them
+- **Per-File Configuration Options**: Select target language, enable filename translation, and choose whether to include the original document
+- **Global Configuration via ENV**: The API Key and other configuration options can be set via the environment variables, as before.
+- **Real-time Monitoring**: View translation progress and job status
+- **Log Access**: View service logs, web logs, and job-specific logs
+- **Job History**: Access completed translations and their results (good onl until reboot, or some other programs - like Paperless - moves the output file)
+
+![Web UI Initial State](web_ui_initial.png)
+
+*Figure 1: Initial state of the web interface showing the upload form and options.*
+
+![Web UI During Translation](web_ui_translation.png)
+
+*Figure 2: Web interface during an active translation showing progress monitoring.*
+
+#### Web Server Configuration
+
+The web server runs on port 8010 by default. You can change this via Docker port mapping.
 
 ### Notifications (2.3.0+)
 
@@ -240,7 +279,9 @@ The reason I don't recommend this is because it would run all files imported/con
 
 
 
-## Is it Abandoned?
+## FAQs
+
+### Is it Abandoned?
 
 If this project has not been updated in awhile everyone asks, "Is it abandoned?"
 
@@ -251,6 +292,23 @@ It is probably just **done**.
 When I get this to a state where it doesn't need improvement, I won't improve it.  I am not making improvements just to show "progress".  I use this too much to just ignore it.  If it works and I am happy, I won't change it.  If it breaks and I need it, I'll fix it.
 
 But if it works well enough, I'll do something else (the urge to tinker aside).
+
+### Can you use something besides DeepL?
+
+In theory:  Sure.
+
+In fact: No.
+
+Here is the problem (and I am open to solutions):  I want a PDF translator that does layout‑preserving PDF translation.  That means it replaces Language-A text with Language-B text on the exact same place shown on the PDF.  The goal is to have a properly formatted PDF that is readable by Language-B speakers where all the context of placement and images are preserved.
+
+There are plenty of text-to-text or PDF-to-text solutions out there.  But that isn't what I want. 
+
+I haven't found a free, OSS solution that does that.  
+LibreTranslate does not support PDF, and doesn't do layout‑preserving PDF translation.
+
+And it needs to work via an API (not web form based)
+
+There are a few APIs (Google, BeringAI, etc.), but they all cost money.  I don't want to pay for a service that I don't use.
 
 ## Star History
 
