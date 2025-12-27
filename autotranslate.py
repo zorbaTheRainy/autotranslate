@@ -70,7 +70,7 @@ logger = logging.getLogger()
 # DEBUG variables
 DEBUG_DUMP_VARS = True  # Set to True to enable config/args debug dump
 DEBUG_NO_SEND_FILE = True  # Set to True to skip sending translated files (for testing)
-DEBUG_UNOBSCURE_API_KEY = True  # Set to True to show the actual API key (for testing)
+DEBUG_UNOBSCURE_API_KEY = False  # Set to True to show the actual API key (for testing)
 
 
 # -----------------------------------------------------------------------
@@ -117,14 +117,26 @@ class Config:
     callback_on_local_log_file: Optional[Callable[[Path], None]] = None
     callback_on_file_complete: Optional[Callable[[Path], None]] = None
 
-AT_BASE_DIR = Path(os.getenv("AT_BASE_DIR", "."))
 @dataclass
 class ConfigNonContainerDefaults(Config):
     """Configuration defaults when running outside a container."""
-    input_dir:  Path = AT_BASE_DIR / "input"
-    output_dir: Path = AT_BASE_DIR / "output"
-    log_dir:    Path = AT_BASE_DIR / "logs"
+    @staticmethod
+    def _default_base_dir() -> Path:
+        return Path(os.getenv("AT_BASE_DIR", "."))
+
+    base_dir: Path = field(default_factory=lambda: ConfigNonContainerDefaults._default_base_dir())  # pylint: disable=W0108
+
+    # init pre-running load_dotenv() and ${AT_BASE_DIR} isn't defined yet
+    input_dir:  Path = field(default=Path("./input"), init=False)
+    output_dir: Path = field(default=Path("./output"), init=False)
+    log_dir:    Path = field(default=Path("./logs"), init=False)
     tmp_dir:    Path = Path("/tmp")
+
+    # run this after calling load_dotenv() and defining ${AT_BASE_DIR}
+    def __post_init__(self):
+        self.input_dir  = self.base_dir / "input"
+        self.output_dir = self.base_dir / "output"
+        self.log_dir    = self.base_dir / "logs"
 
 class EmptyArgs(argparse.Namespace):
     """
