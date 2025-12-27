@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ title }}</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #fff8f5;
+      color: #4E2A1E;
+      margin: 2em;
+      text-align: center;
+    }
+    h1 {
+      color: #4E2A1E;
+    }
+    hr {
+      border: none;
+      border-top: 2px solid #4E2A1E;
+      margin: 1em auto;
+      width: 50%;
+    }
+    .error-container {
+      max-width: 600px;
+      margin: auto;
+      padding: 2em;
+      border: 2px solid #4E2A1E;
+      border-radius: 8px;
+      background-color: #fdf3ef;
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #4E2A1E;
+      text-decoration: none;
+      font-weight: bold;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+    .countdown {
+      font-weight: bold;
+      color: #6A3B2A;
+    }
+    .link-buttons-row {
+      display: flex;
+      justify-content: center;
+      gap: 1em;
+      margin-top: 2em;
+    }
+    .link-buttons-row a {
+      display: inline-block;
+      padding: 0.6em 1.2em;
+      background-color: #4E2A1E;
+      color: #fff;
+      text-decoration: none;
+      border-radius: 4px;
+    }
+    .link-buttons-row a:hover {
+      background-color: #6A3B2A;
+    }
+  </style>
+  {% if is_quota %}
+  <script>
+    function updateCountdown() {
+      const now = Date.now() / 1000;
+      const remaining = {{ renewal_time }} - now;
+      if (remaining <= 0) {
+        location.reload();
+      } else {
+        const days = Math.floor(remaining / 86400);
+        const hours = Math.floor((remaining % 86400) / 3600);
+        const minutes = Math.floor((remaining % 3600) / 60);
+        const seconds = Math.floor(remaining % 60);
+        let countdown = '';
+        if (days > 0) countdown += days + 'd ';
+        if (hours > 0 || days > 0) countdown += hours + 'h ';
+        countdown += minutes + 'm ' + seconds + 's';
+        document.getElementById('countdown').textContent = countdown.trim();
+      }
+    }
+    setInterval(updateCountdown, 1000);
+  </script>
+  {% endif %}
+</head>
+<body>
+  <div class="error-container">
+    <h1>{{ header }}</h1>
+    <hr>
+    <p>{{ error_message }}</p>
+    {% if is_quota %}
+    <p>Quota renews in: <span id="countdown" class="countdown"></span></p>
+    {% endif %}
+  </div>
+  <!-- Buttons -->
+  <div class="link-buttons-row">
+    <a href="/log/{{ global_log_filename }}" target="_blank">Service Log</a>
+    <a href="/log/{{ web_log_filename }}" target="_blank">Web Log</a>
+    <a href="/status" target="_blank">Web History</a>
+    <a href="https://www.deepl.com/en/your-account/summary" target="_blank">DeepL User Page</a>
+  </div>
+
+</body>
+</html>
