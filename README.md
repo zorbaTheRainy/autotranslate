@@ -198,12 +198,11 @@ The normal script behaviour, via the input/output directories, is still availabl
 - **Log Access**: View service logs, web logs, and job-specific logs
 - **Job History**: Access completed translations and their results (good onl until reboot, or some other programs - like Paperless - moves the output file)
 
-![Web UI Initial State](web_ui_initial.png)
+<img src="./documentation/images/web_ui_initial.png" alt="Web UI Initial State" width="300" height="200">
 
 *Figure 1: Initial state of the web interface showing the upload form and options.*
 
-![Web UI During Translation](web_ui_translation.png)
-
+<img src="documentation/images/web_ui_inweb_ui_translationitial.png" alt="Web UI During Translation" width="300" height="200">
 *Figure 2: Web interface during an active translation showing progress monitoring.*
 
 #### Web Server Configuration
