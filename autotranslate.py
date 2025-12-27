@@ -96,9 +96,9 @@ class Config:
         notify_urls: List[str]:  Commas separated list of URLs in Apprise format
     """
     # Directory paths
-    input_dir:  Path = Path("/inputDir")  # note: if outside a container, this is changed to ./input  in build_config()
-    output_dir: Path = Path("/outputDir") # note: if outside a container, this is changed to ./output
-    log_dir:    Path = Path("/logDir")    # note: if outside a container, this is changed to ./logs
+    input_dir:  Path = Path("/inputDir")  # note: if outside a container, this is changed to ${AT_BASE_DIR}/input
+    output_dir: Path = Path("/outputDir") # note: if outside a container, this is changed to ${AT_BASE_DIR}/output
+    log_dir:    Path = Path("/logDir")    # note: if outside a container, this is changed to ${AT_BASE_DIR}/logs
     tmp_dir:    Path = Path("/tmp")       # note: if outside a container, this is changed to /tmp
     # API and server settings
     auth_key:   str = ""
@@ -117,13 +117,14 @@ class Config:
     callback_on_local_log_file: Optional[Callable[[Path], None]] = None
     callback_on_file_complete: Optional[Callable[[Path], None]] = None
 
+AT_BASE_DIR = Path(os.getenv("AT_BASE_DIR", "."))
 @dataclass
 class ConfigNonContainerDefaults(Config):
-    # Directory paths
-    input_dir:  Path = Path("./folders/input")  # note: if outside a container, this is changed to ./input  in build_config()
-    output_dir: Path = Path("./folders/output") # note: if outside a container, this is changed to ./output
-    log_dir:    Path = Path("./folders/logs")    # note: if outside a container, this is changed to ./logs
-    tmp_dir:    Path = Path("/tmp")       # note: if outside a container, this is changed to /tmp
+    """Configuration defaults when running outside a container."""
+    input_dir:  Path = AT_BASE_DIR / "input"
+    output_dir: Path = AT_BASE_DIR / "output"
+    log_dir:    Path = AT_BASE_DIR / "logs"
+    tmp_dir:    Path = Path("/tmp")
 
 class EmptyArgs(argparse.Namespace):
     """
@@ -461,6 +462,15 @@ def setup_exit_hooks():
 
 
 def get_default_log_dir(failsafe: Union[Path, str] = "/tmp") -> Path:
+    ''' Determine the default log directory based on environment.
+        Really used by outside the module when config is not available.
+
+    Args:
+        failsafe (Union[Path, str], optional): Path to directory to use if no environment variable is set. Defaults to "/tmp".
+
+    Returns:
+        Path: Path to directory to use if no environment variable is set.
+    '''
     env_value = os.getenv("LOG_DIR")
     if env_value:
         return Path(env_value)
@@ -743,7 +753,7 @@ def get_deepl_languages() -> Dict:
     """
 
     # https://developers.deepl.com/docs/getting-started/supported-languages#translation-target-languages
-    DEEPL_LANGUAGES: Dict[str, str] = {
+    deepl_languages: Dict[str, str] = {
         "AR": "Arabic",
         "BG": "Bulgarian",
         "CS": "Czech",
@@ -783,7 +793,7 @@ def get_deepl_languages() -> Dict:
         "ZH-HANT": "Chinese (traditional)"
     }
 
-    return DEEPL_LANGUAGES
+    return deepl_languages
 
 
 def get_valid_deepl_target_lang(lang_code: str) -> Optional[str]:
@@ -800,7 +810,7 @@ def get_valid_deepl_target_lang(lang_code: str) -> Optional[str]:
     """
 
     # https://developers.deepl.com/docs/getting-started/supported-languages#translation-target-languages
-    DEEPL_LANGUAGES = get_deepl_languages()
+    deepl_languages = get_deepl_languages()
 
     # Exceptions
     if lang_code.strip().lower() in ("zh-cn", "zh", "chinese (simplified)"):
@@ -818,7 +828,7 @@ def get_valid_deepl_target_lang(lang_code: str) -> Optional[str]:
     code_format = lang_code.strip().upper()
     name_format = lang_code.strip().lower()
 
-    for code, name in DEEPL_LANGUAGES.items():
+    for code, name in deepl_languages.items():
         if code_format == code.upper() or name_format == name.lower():
             return code
     return None
@@ -1150,7 +1160,7 @@ def clean_filename(file: Union[str, Path]) -> str:
     filtered_list = list(filter(lambda c: c in safechars, name))
     filtered_str = ''.join(filtered_list)
 
-    # fallback name if everything was stripped away
+    # raise error if everything was stripped away
     if not filtered_str or (filtered_str in (".", "..", "")):
         raise FilenameCleanseError(f"Filename '{file_path}' could not be cleaned to a safe name.")
 
@@ -1449,15 +1459,15 @@ def monitor_directory(cfg: Config, stop_monitoring: Optional[threading.Event] = 
                         did_flush = flush_handlers() # flush any pending log messages before sleep
                     wait_seconds = num_seconds_till_renewal(cfg.usage_renewal_day)
                     if cfg.global_log_file_handler is not None:
-                        if wait_seconds >= 820800:        # ≥ 9.5 days
+                        if wait_seconds >= 820800:        # >= 9.5 days
                             num_graduations = 10
-                        elif wait_seconds >= 648000:      # 7.5–8.5 days
+                        elif wait_seconds >= 648000:      # 7.5-8.5 days
                             num_graduations = 8
-                        elif wait_seconds >= 475200:      # 5.5–6.5 days
+                        elif wait_seconds >= 475200:      # 5.5-6.5 days
                             num_graduations = 6
-                        elif wait_seconds >= 388800:      # 4.5–5.5 days
+                        elif wait_seconds >= 388800:      # 4.5-5.5 days
                             num_graduations = 5
-                        else:                              # ≤ 4.5 days
+                        else:                              # <= 4.5 days
                             num_graduations = 4
                         sleep_with_progressbar_countdown(cfg.global_log_file_handler, secs=wait_seconds, graduations=num_graduations)
                     else:
