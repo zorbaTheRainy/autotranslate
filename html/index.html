@@ -182,7 +182,7 @@
       <select id="target-language" name="target_language">
         {% for code, name in deepl_languages.items() %}
           <option value="{{ code }}" {% if code == cfg.target_lang %}selected{% endif %}>
-            {{ name }}
+            {{ code }} • {{ name }}
           </option>
         {% endfor %}
       </select>
