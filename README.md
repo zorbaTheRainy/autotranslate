@@ -198,12 +198,11 @@ The normal script behaviour, via the input/output directories, is still availabl
 - **Log Access**: View service logs, web logs, and job-specific logs
 - **Job History**: Access completed translations and their results (good onl until reboot, or some other programs - like Paperless - moves the output file)
 
-<img src="./documentation/images/web_ui_initial.png" alt="Web UI Initial State" width="300" height="200">
+Figure 1: Initial state of the web interface showing the upload form and options.
+<img src="https://raw.githubusercontent.com/zorbaTheRainy/autotranslate/main/documentation/images/web_ui_initial.png" alt="Web UI Initial State" style="width: 80%; height: auto;">
 
-*Figure 1: Initial state of the web interface showing the upload form and options.*
-
-<img src="documentation/images/web_ui_inweb_ui_translationitial.png" alt="Web UI During Translation" width="300" height="200">
-*Figure 2: Web interface during an active translation showing progress monitoring.*
+Figure 2: Web interface during an active translation showing log/progress monitoring.
+<img src="https://raw.githubusercontent.com/zorbaTheRainy/autotranslate/main/documentation/images/web_ui_translation.png" alt="Web UI During Translation" style="width: 80%; height: auto;">
 
 #### Web Server Configuration
 
@@ -309,15 +308,8 @@ And it needs to work via an API (not web form based)
 
 There are a few APIs (Google, BeringAI, etc.), but they all cost money.  I don't want to pay for a service that I don't use.
 
-## Star History
-
-Oh, look at my ego!!!!
-
-[![Star History Chart](https://api.star-history.com/svg?repos=zorbaTheRainy/autotranslate&type=date&legend=top-left)](https://www.star-history.com/#zorbaTheRainy/autotranslate&type=date&legend=top-left)
-
 
 ## License
 
 [MIT](LICENSE)
 
-#
