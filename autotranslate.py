@@ -69,7 +69,7 @@ except ImportError:
 logger = logging.getLogger()
 # DEBUG variables
 DEBUG_DUMP_VARS = True  # Set to True to enable config/args debug dump
-DEBUG_NO_SEND_FILE = True  # Set to True to skip sending translated files (for testing)
+DEBUG_NO_SEND_FILE = False  # Set to True to skip sending translated files (for testing)
 DEBUG_UNOBSCURE_API_KEY = False  # Set to True to show the actual API key (for testing)
 
 
