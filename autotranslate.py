@@ -53,6 +53,12 @@ from dotenv import load_dotenv                 # pip install dotenv            #
 
 # intra-module imports
 from version import VERSION as __version__
+try:
+    import autotranslate_web_server
+    WEB_SERVER_AVAILABLE = True
+except ImportError:
+    WEB_SERVER_AVAILABLE = False
+
 
 # Optional Apprise import for notifications
 try:
@@ -69,7 +75,7 @@ except ImportError:
 logger = logging.getLogger()
 # DEBUG variables
 DEBUG_DUMP_VARS = True  # Set to True to enable config/args debug dump
-DEBUG_NO_SEND_FILE = False  # Set to True to skip sending translated files (for testing)
+DEBUG_NO_SEND_FILE = True  # Set to True to skip sending translated files (for testing)
 DEBUG_UNOBSCURE_API_KEY = False  # Set to True to show the actual API key (for testing)
 
 
@@ -110,12 +116,15 @@ class Config:
     usage_renewal_day:  int = 0
     put_original_first: bool = False
     translate_filename: bool = False
+    use_web_server:     bool = False
     notify_urls: List[str] = field(default_factory=list)
     # Run-time variables (not set via args or env)
     global_log_file_handler: Optional[logging.FileHandler] = None
     global_log_file_path: Optional[Path] = None
     callback_on_local_log_file: Optional[Callable[[Path], None]] = None
     callback_on_file_complete: Optional[Callable[[Path], None]] = None
+    callback_on_fatal_error: Optional[Callable[[str], None]] = None
+    callback_on_quota_exceeded: Optional[Callable[[], None]] = None
 
 @dataclass
 class ConfigNonContainerDefaults(Config):
@@ -290,6 +299,7 @@ def parse_args() -> argparse.Namespace:
                                         action="store_const", const=True, default=None,
                                         help="If set, modify filename to indicate translation.")
     parser.add_argument("-u", "--notify-urls", help="Comma-separated Apprise URLs for notifications.")
+    parser.add_argument("-w", "--web-server", action="store_true", help="Run web interface alongside monitoring.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser.parse_args()
 
@@ -324,7 +334,10 @@ def main() -> None:
         # close the global log file and any Apprise handlers and exit
         graceful_exit(2)   # Fatal error
 
-
+    if cfg.use_web_server and WEB_SERVER_AVAILABLE:
+        threading.Thread(target=autotranslate_web_server.start_web_server, args=(cfg,), daemon=True).start()
+        logger.info("Web server started")
+        
     # now we move into doing work
     if cfg.source_file is not None:
         # single file mode
@@ -341,8 +354,14 @@ def main() -> None:
             logger.error(f"{e}")
             # close the global log file and any Apprise handlers and exit
             if isinstance(e, QuotaExceededException):
+                if cfg.callback_on_quota_exceeded and cfg:
+                    cfg.callback_on_quota_exceeded()
+                    logger.debug(f"Called back to quota exceeded")
                 graceful_exit(3)  # Quota exceeded exit code
             else:
+                if cfg.callback_on_fatal_error and cfg:
+                    cfg.callback_on_fatal_error(str(e))
+                    logger.debug(f"Called back to fatal error")
                 graceful_exit(2)  # Fatal error
     else:
         # directory mode
@@ -354,6 +373,9 @@ def main() -> None:
             else:
                 logger.error("Unexpected error occurred during file processing.")
             logger.error(f"{e}")
+            if cfg.callback_on_fatal_error and cfg:
+                cfg.callback_on_fatal_error(str(e))
+                logger.debug(f"Called back to fatal error")
             graceful_exit(2)  # Fatal error
 
 
@@ -541,6 +563,7 @@ def build_config(args: Optional[argparse.Namespace] = None) -> Config:
     new_cfg.check_period_min    = to_float(arg_or_env( args.check_every_x_minutes,      "CHECK_EVERY_X_MINUTES")  ,  default.check_period_min)
     new_cfg.translate_filename  = to_bool(arg_or_env( args.translate_filename,          "TRANSLATE_FILENAME")     ,  default.translate_filename)
     new_cfg.put_original_first  = to_bool(arg_or_env( args.original_before_translation, "ORIGINAL_BEFORE_TRANSLATION"), default.put_original_first)
+    new_cfg.use_web_server      = to_bool(arg_or_env( args.web_server,                  "USE_WEB_SERVER"),           default.use_web_server)
 
     if args.file is not None:
         new_cfg.source_file = Path(args.file)
@@ -1419,29 +1442,12 @@ def send_apprise_message(title: str, body: str, attach: Optional[Path] = None) -
     return False
 
 
-def monitor_directory(cfg: Config, stop_monitoring: Optional[threading.Event] = None) -> None:
+def monitor_directory(cfg: Config) -> None:
     """
     Monitor the input directory for new files and process them.
 
     Args:
         cfg (Config): Configuration object.
-
-    Example for API usage:
-        stop_monitoring = threading.Event()
-
-        def run_monitor():
-            try:
-                cfg = autotranslate.init_autotranslate()
-                autotranslate.monitor_directory(cfg, stop_monitoring)
-            except Exception as e:
-                print(f"Monitor loop exited: {e}")
-
-        # start thread
-        monitor_thread = threading.Thread(target=run_monitor, daemon=True)
-        monitor_thread.start()
-
-        # later, on shutdown:
-        stop_monitoring.set()
 
     """
 
@@ -1452,7 +1458,7 @@ def monitor_directory(cfg: Config, stop_monitoring: Optional[threading.Event] = 
     check_period_sec = int(60 * cfg.check_period_min)  # convert minutes to seconds
     did_flush = False # initialize flush flag for directory mode
 
-    while stop_monitoring is None or not stop_monitoring.is_set(): # loop forever
+    while True: # loop forever
         for file_path in cfg.input_dir.iterdir():
             if file_path.is_dir():
                 continue
@@ -1466,6 +1472,10 @@ def monitor_directory(cfg: Config, stop_monitoring: Optional[threading.Event] = 
                 except QuotaExceededException as qe:
                     logger.error("Translation quota exceeded during file processing.")
                     logger.error(f"{qe}")
+                    if cfg.callback_on_quota_exceeded and cfg:
+                        cfg.callback_on_quota_exceeded()
+                        logger.debug(f"Called back to quota exceeded")
+
 
                     if not did_flush:
                         did_flush = flush_handlers() # flush any pending log messages before sleep

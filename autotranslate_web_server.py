@@ -26,10 +26,9 @@ Usage:
 """
 
 # standard libraries
-import atexit                                  # https://docs.python.org/3/library/atexit.html
+import copy                                    # https://docs.python.org/3/library/copy.html
 import logging                                 # https://docs.python.org/3/library/logging.html
 import logging.handlers                        # https://docs.python.org/3/library/logging.handlers.html
-import signal                                  # https://docs.python.org/3/library/signal.html
 import sys                                     # https://docs.python.org/3/library/sys.html
 import threading                               # https://docs.python.org/3/library/threading.html
 import time                                    # https://docs.python.org/3/library/time.html
@@ -60,28 +59,47 @@ class ScoreboardEntry:
     output_file: Optional[Path] = None
     # config: Optional[autotranslate.Config] = None # decided not to store full config
 
+# Filter to throttle /log endpoint requests from werkzeug
+class LogEndpointFilter(logging.Filter):
+    '''Filter to throttle repeated /log/filename requests from werkzeug.'''
+    def __init__(self):
+        super().__init__()
+        self.last_logged = {}  # filename -> last logged timestamp
+        self.quiet_period = 5 * 60  # 5 minutes in seconds
+    def filter(self, record):
+        if record.name == "werkzeug":
+            msg = record.getMessage()
+            # Check for GET /log/filename HTTP/1.1" 200
+            import re
+            # match = re.search(r'GET /log/([^"]+) HTTP/[^"]+" 200', msg)
+            match = re.search(r'"(?:GET|HEAD)\s+/log/([^?\s"]+)(?:\?[^"\s]*)?\s+HTTP/[^"]+"\s+200\b', msg)
+            if match:
+                filename = match.group(1)
+                now = time.time()
+                if filename not in self.last_logged or (now - self.last_logged[filename]) > self.quiet_period:
+                    self.last_logged[filename] = now
+                    return True  # Log this one
+                else:
+                    return False  # Drop this one
+        return True
+
 # -----------------------------------------------------------------------
 # Module-level variables (accessible to all functions in this file)
 # -----------------------------------------------------------------------
 
 # web page vars
 app = Flask(__name__, template_folder="html")
+APP_PORT = 8010
+cfg: Optional[autotranslate.Config] = None
 web_logger = logging.getLogger("web")
 web_log_file_path: Optional[Path] = None
-APP_PORT = 8010
-# to run autotranslate in directory monitor mode
-monitor_thread: Optional[threading.Thread] = None
-monitor_thread_lock = threading.Lock()
-stop_monitoring = threading.Event()
-# Config sent back from autotranslate
-cfg_is_inited: bool = False
-cfg: Optional[autotranslate.Config] = None
-cfg_lock = threading.Lock()
 # a list of all jobs run via the webpage (and their data)
 scoreboard: Dict[str, ScoreboardEntry] = {}
 scoreboard_lock = threading.Lock()
 # error flags
+quota_lock = threading.Lock()
 is_quota_exceeded: bool = False
+fatal_error_lock = threading.Lock()
 is_fatal_error: bool = False
 fatal_error_reason: Optional[str] = None
 
@@ -89,33 +107,36 @@ fatal_error_reason: Optional[str] = None
 # -----------------------------------------------------------------------
 # MAIN
 # -----------------------------------------------------------------------
-def main() -> None:
+def start_web_server(cli_cfg: autotranslate.Config) -> None:
     """
-    Main entry point for the web server.
+    Start the web server with the given config.
 
-    Sets up logging, starts monitor thread, waits for init, adds file logging, runs Flask app.
+    Sets up logging, starts monitor thread, adds file logging, runs Flask app.
     """
-    global monitor_thread # pylint: disable=global-statement
+
+    global cfg, web_log_file_path # pylint: disable=global-statement
+    cfg = cli_cfg
 
     # init logger, and start output to STDOUT
-    setup_web_logging()
+    setup_web_stdout_logging()
 
-    # Handle normal exits (atexit), and SIGINT/SIGTERM signals
-    setup_web_exit_hooks()
+    # Wee bit of error checking
+    if (cfg is None):
+        web_logger.info("Config values passed from CLI are None, web server cannot start.")
+        return
 
-    # launch autotranslate.py in directory monitoring mode
-    # also need to get cfg initialized before starting web server
-    monitor_thread = threading.Thread(target=run_directory_monitor, daemon=True)
-    monitor_thread.start()
-
-    # wait for cfg to come back from monitor thread
-    while not cfg_is_inited:
-        time.sleep(0.1)
+    try:
+        cfg.callback_on_fatal_error = capture_fatal_error
+        cfg.callback_on_quota_exceeded = capture_quota_excess
+    except (AttributeError, TypeError) as e:
+        web_logger.error(f"Failed to set fatal error callback: {e}")
 
     # Now setup the global log file (note: log_dir may not exist, fails gracefully)
-    add_web_file_logging()
+    web_log_file_path = add_web_file_logging()
+    if (web_log_file_path is None):
+        web_logger.info("Web Log file not initialized.")
 
-    # Start web server
+    # Start web server (regardless of state, let @app.before_request handle uninitialized state)
     app.run(host="0.0.0.0", port=APP_PORT)
 
 
@@ -138,8 +159,9 @@ def ensure_initialized():
     excluded_endpoints = {"file_log"}
     if request.endpoint in excluded_endpoints:
         return None
-    if (not cfg_is_inited) or (not cfg):
-        return "Autotranslate service not initialized", 500
+    if (cfg is None) or (web_log_file_path is None):
+        web_logger.info("Autotranslate web service blocked as not initialized")
+        return "Autotranslate web service not initialized", 500
 
 @app.route("/")
 def index():
@@ -154,10 +176,9 @@ def index():
     # get the task ID if is was passed (e.g., /?job_id=2025_12_24_15_30_00_001); passed if redirected from /run, None otherwise
     job_id = request.args.get("job_id", None)
 
-    # get log paths
+    # get CLI log path
     global_log_filename = None
-    with cfg_lock:
-        global_log_filename = cfg.global_log_file_path.name if (cfg and cfg.global_log_file_path) else None
+    global_log_filename = cfg.global_log_file_path.name if (cfg and cfg.global_log_file_path) else None
 
 
     # if the whole program crashed (or just autotranslate's monitor
@@ -195,8 +216,7 @@ def index():
             entry = scoreboard[job_id]
             if entry.log_file is not None:
                 jobs_log_filename = entry.log_file.name
-
-    web_logger.info(f"\t Passed log file in scoreboard entry: {jobs_log_filename}")
+    web_logger.info(f"\t Entered log file into scoreboard entry: {jobs_log_filename}")
 
 
     return render_template( "index.html",
@@ -223,7 +243,15 @@ def run_translation():
 
     uploaded = request.files.get("pdf_file")
     if not uploaded:
-        return "No PDF uploaded", 400
+        return render_template(
+                                "error.html",
+                                title="Input Error",
+                                header="No PDF uploaded",
+                                error_message="No PDF uploaded",
+                                global_log_filename=cfg.global_log_file_path.name if (cfg and cfg.global_log_file_path) else None,
+                                web_log_filename=web_log_file_path.name if web_log_file_path else None,
+                            ), 400
+        # return "No PDF uploaded", 400
     # clean uploaded filename
     uploaded_filename = uploaded.filename
     if uploaded_filename is None:
@@ -234,22 +262,11 @@ def run_translation():
     uploaded.save(input_path)
 
     # Clone cfg for this run
-    with cfg_lock:
-        default_target_lang = cfg.target_lang
-        new_cfg = autotranslate.Config(
-                                        input_dir=cfg.input_dir,
-                                        output_dir=cfg.output_dir,
-                                        log_dir=cfg.log_dir,
-                                        tmp_dir=cfg.tmp_dir,
-                                        auth_key=cfg.auth_key,
-                                        server_url=cfg.server_url,
-                                        target_lang=cfg.target_lang,
-                                        translate_filename=cfg.translate_filename,
-                                        put_original_first=cfg.put_original_first,
-                                        notify_urls=cfg.notify_urls,
-                                        source_file=input_path,
-                                    )
+    default_target_lang = cfg.target_lang
+    new_cfg = copy.deepcopy(cfg)
+
     # Extract form values
+    new_cfg.source_file = input_path
     new_cfg.target_lang = request.form.get("target_language", default_target_lang)
     new_cfg.translate_filename = request.form.get("translate_filename") == "yes"
     new_cfg.put_original_first = request.form.get("include_original") == "yes"
@@ -292,12 +309,13 @@ def check_output():
     Returns:
         JSON response with ready status and filename.
     """
+    assert cfg is not None, "Config=None should have been guarded against by ensure_initialized()"
+
     try:
         # get the task ID if is was passed (e.g., /?job_id=2025_12_24_15_30_00_001); passed if redirected from /run, None otherwise
         job_id = request.args.get("job_id", None)
 
         output_file_path = None
-
         with scoreboard_lock:
             if job_id and (job_id in scoreboard):
                 entry = scoreboard[job_id]
@@ -325,8 +343,7 @@ def serve_output(filename: str):
     """
     assert cfg is not None, "Config=None should have been guarded against by ensure_initialized()"
 
-    with cfg_lock:
-        path = cfg.output_dir / filename
+    path = cfg.output_dir / filename
 
     # final checks: file must exist and be a regular file
     if (not path.exists()) or (not path.is_file()):
@@ -343,15 +360,16 @@ def download(dl_type: str, filename: str):
     No module-level globals except `app`. The directory map lives inside
     the route and we perform existence and path traversal checks.
     """
+    assert cfg is not None, "Config=None should have been guarded against by ensure_initialized()"
+
     # map types to directories locally inside the function
     dir_path = None
-    with cfg_lock:
-        if dl_type == "output":
-            dir_path = cfg.output_dir if cfg else None
-        elif dl_type == "log":
-            dir_path = cfg.log_dir if cfg else None
-        else:
-            dir_path = None
+    if dl_type == "output":
+        dir_path = cfg.output_dir if cfg else None
+    elif dl_type == "log":
+        dir_path = cfg.log_dir if cfg else None
+    else:
+        dir_path = None
 
     if dir_path is None:
         # unknown type
@@ -387,7 +405,7 @@ def report_scoreboard():
                     log_link = 'Deleted'
             else:
                 log_link = 'None'
-            
+
             if entry.output_file:
                 if entry.output_file.exists():
                     output_link = f'<a href="/download/output/{entry.output_file.name}" target="_blank">{entry.output_file.name}</a>'
@@ -395,7 +413,7 @@ def report_scoreboard():
                     output_link = f'{entry.output_file.name} (Deleted)'
             else:
                 output_link = 'None'
-            
+
             jobs.append({
                 'id': job_id,
                 'input_file': entry.input_file.name if entry.input_file else 'N/A',
@@ -420,10 +438,9 @@ def file_log(log_filename: str):
     # get the mode (e.g., realtime)
     mode = request.args.get("mode", None)
 
-    with cfg_lock:
-        log_dir = cfg.log_dir if cfg else None
+    log_dir = cfg.log_dir if cfg else None
     if not log_dir:
-        log_dir = autotranslate.get_default_log_dir()
+        log_dir = Path("/tmp")
     log_path = log_dir / log_filename
 
     if not log_path.exists() or not log_path.is_file():
@@ -434,7 +451,7 @@ def file_log(log_filename: str):
 
     # last 200 lines
     tail_raw = "".join(lines[-200:])
-    
+
     # clean ANSI colour codes
     conv = Ansi2HTMLConverter(inline=True)
     tail = conv.convert(tail_raw, full=False)
@@ -461,36 +478,6 @@ def file_log(log_filename: str):
 # -----------------------------------------------------------------------
 # Threaded Functions
 # -----------------------------------------------------------------------
-
-def run_directory_monitor():
-    """
-    Run the directory monitoring loop in a separate thread.
-
-    Initializes config and starts monitoring.
-    If fails, sets crash state.
-    """
-    global cfg, cfg_is_inited, is_fatal_error, fatal_error_reason  # pylint: disable=global-statement
-    try:
-        web_logger.info("Monitor loop started")
-        with cfg_lock:
-            cfg = autotranslate.init_autotranslate()
-            cfg_is_inited = True
-        autotranslate.monitor_directory(cfg, stop_monitoring)
-    except (ValueError, autotranslate.ConfigurationError) as e:
-        web_logger.error(f"Fundamental error in the configuration values.  All programs have stopped")
-        web_logger.error(f"Configuration error: {e}")
-        cfg_is_inited = False
-        # Fatal error
-        is_fatal_error = True
-        fatal_error_reason = str(e)
-    except Exception as e:
-        # BTW, we ignore Quota errors, letting monitor_dir() and process_file() handle them differently
-        web_logger.error(f"Monitor loop exited: {e}")
-        cfg_is_inited = False
-        # Fatal error
-        is_fatal_error = True
-        fatal_error_reason = str(e)
-
 
 def run_process_file(file_path: Union[str, Path], config: autotranslate.Config) -> bool:
     """
@@ -523,34 +510,25 @@ def run_process_file(file_path: Union[str, Path], config: autotranslate.Config) 
             fatal_error_reason = str(e)
         return False
 
+# Callback: fires immediately when per-file log is created
+def capture_fatal_error(msg: str) -> None:
+    global is_fatal_error, fatal_error_reason  # pylint: disable=global-statement
+    with fatal_error_lock:
+        is_fatal_error = True
+        fatal_error_reason = msg
+    web_logger.error(f"\t Fatal Error captured: {msg}")
+
+# Callback: fires immediately when per-file log is created
+def capture_quota_excess() -> None:
+    global is_quota_exceeded # pylint: disable=global-statement
+    with quota_lock:
+        is_quota_exceeded = True
+    web_logger.error(f"\t Quota exceeded.")
 
 # -----------------------------------------------------------------------
 # Core Functions
 # -----------------------------------------------------------------------
-
-
-
-
-def unique_timestamp_key(input_file: Optional[Path]) -> str:
-    """
-    Generate a unique key of the form:
-    YYYY_MM_DD_HH_MM_SS_###
-    using a global, thread-safe dictionary.
-    """
-    base = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    counter = 0
-
-    while True:
-        key = f"{base}_{counter:03d}"
-        # Atomic check + insert
-        with scoreboard_lock:
-            if key not in scoreboard:
-                scoreboard[key] = ScoreboardEntry(id=key, input_file=input_file)
-                return key
-        # increment counter if the key exists
-        counter += 1
-
-def setup_web_logging():
+def setup_web_stdout_logging():
     """
     Set up logging for the web server with console handler.
     """
@@ -567,15 +545,13 @@ def setup_web_logging():
     web_logger.addHandler(ch)
     return
 
-def add_web_file_logging():
+def add_web_file_logging() -> Optional[Path]:
     """
     Add rotating file handler for web server logs.
     """
-    global web_log_file_path  # pylint: disable=global-statement
-    with cfg_lock:
-        log_dir = cfg.log_dir if cfg else None
+    log_dir = cfg.log_dir if cfg else None
     if not log_dir:
-        log_dir = autotranslate.get_default_log_dir()
+        log_dir = Path("/tmp")
     log_file = log_dir / f"_{Path(__file__).stem}.log"
 
 
@@ -600,14 +576,14 @@ def add_web_file_logging():
 
         web_logger.info(f"Creating web log file!")
         web_logger.info(f"\tWeb Log file: {log_file}")
-        web_log_file_path = log_file
+        local_web_log_file_path = log_file
 
     except (OSError, PermissionError) as error:
         web_logger.info(f"") # start on a fresh line (in-case the server crashed mid-line the previous run)
         web_logger.warning(f"Unable to write to global log file!")
         web_logger.warning(f"\tWeb Log file: {log_file}")
         web_logger.warning(f"\t{error}")
-        web_log_file_path = None # assign the None value if fileHandler failed
+        local_web_log_file_path = None # assign the None value if fileHandler failed
 
     # start the log
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -617,31 +593,6 @@ def add_web_file_logging():
     web_logger.info(f'----------------------------------------')
     web_logger.info(f'')
 
-
-    # Filter to throttle /log endpoint requests from werkzeug
-    class LogEndpointFilter(logging.Filter):
-        '''Filter to throttle repeated /log/filename requests from werkzeug.'''
-        def __init__(self):
-            super().__init__()
-            self.last_logged = {}  # filename -> last logged timestamp
-            self.quiet_period = 5 * 60  # 5 minutes in seconds
-        def filter(self, record):
-            if record.name == "werkzeug":
-                msg = record.getMessage()
-                # Check for GET /log/filename HTTP/1.1" 200
-                import re
-                # match = re.search(r'GET /log/([^"]+) HTTP/[^"]+" 200', msg)
-                match = re.search(r'"(?:GET|HEAD)\s+/log/([^?\s"]+)(?:\?[^"\s]*)?\s+HTTP/[^"]+"\s+200\b', msg)
-                if match:
-                    filename = match.group(1)
-                    now = time.time()
-                    if filename not in self.last_logged or (now - self.last_logged[filename]) > self.quiet_period:
-                        self.last_logged[filename] = now
-                        return True  # Log this one
-                    else:
-                        return False  # Drop this one
-            return True
-
     # Force werkzeug (Flack) to use the same handlers as web_logger
     logging.getLogger("werkzeug").handlers = web_logger.handlers
     logging.getLogger("werkzeug").propagate = False
@@ -649,33 +600,7 @@ def add_web_file_logging():
     logging.getLogger("werkzeug").addFilter(LogEndpointFilter()) # prevent flooding the log files
     web_logger.addFilter(LogEndpointFilter())  # prevent flooding the log files
 
-    return
-
-def setup_web_exit_hooks():
-    """
-    Setup exit hooks.
-    """
-    # setup web server exit hooks
-    # Handle normal exits (atexit), and SIGINT/SIGTERM signals
-    atexit.register(graceful_exit, 0)
-
-    # Catch Ctrl-C (SIGINT) and container stop (SIGTERM)
-    if threading.current_thread() is threading.main_thread():
-        def handle_signal(signum, _frame):
-            # newline
-            web_logger.error("")
-
-            sig_name = signal.Signals(signum).name
-            if sig_name == "SIGTERM":
-                web_logger.error("Program received SIGTERM (signal 15): container stop or `docker kill` request.")
-            elif sig_name == "SIGINT":
-                web_logger.error("Program received SIGINT (signal 2): interrupted by Ctrl-C.")
-            else:
-                web_logger.error(f"Program shutting down due to {sig_name} (signal {signum}).")
-            graceful_exit(1)
-
-        signal.signal(signal.SIGINT, handle_signal)
-        signal.signal(signal.SIGTERM, handle_signal)
+    return local_web_log_file_path
 
 def graceful_exit(exit_code: int = 0) -> None:
     """
@@ -686,13 +611,6 @@ def graceful_exit(exit_code: int = 0) -> None:
     if getattr(graceful_exit, "exit_done", False):
         return
     graceful_exit.exit_done = True
-
-    # Stop monitor thread (run_directory_monitor(), let run_process_file() finish naturally)
-    stop_monitoring.set()
-
-    # Wait for monitor thread to finish (with timeout)
-    if monitor_thread:
-        monitor_thread.join(timeout=5.0)
 
     # Flush logs
     for h in web_logger.handlers[:]:
@@ -709,12 +627,29 @@ def graceful_exit(exit_code: int = 0) -> None:
     else:
         web_logger.debug(f"graceful_exit called with code {exit_code}, not exiting (imported mode).")
 
+
+def unique_timestamp_key(input_file: Optional[Path]) -> str:
+    """
+    Generate a unique key of the form:
+    YYYY_MM_DD_HH_MM_SS_###
+    using a global, thread-safe dictionary.
+    """
+    base = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    counter = 0
+
+    while True:
+        key = f"{base}_{counter:03d}"
+        # Atomic check + insert
+        with scoreboard_lock:
+            if key not in scoreboard:
+                scoreboard[key] = ScoreboardEntry(id=key, input_file=input_file)
+                return key
+        # increment counter if the key exists
+        counter += 1
+
 # ---------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        web_logger.error(f"Fatal crash: {e}")
-        graceful_exit(1)
+
+# No Entrypoint here; this module is imported and started from autotranslate.py
+
