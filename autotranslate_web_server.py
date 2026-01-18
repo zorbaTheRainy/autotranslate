@@ -247,7 +247,7 @@ def run_translation():
                                 "error.html",
                                 title="Input Error",
                                 header="No PDF uploaded",
-                                error_message="No PDF uploaded",
+                                error_message="No PDF selected for upload. Please choose a PDF file to translate.",
                                 global_log_filename=cfg.global_log_file_path.name if (cfg and cfg.global_log_file_path) else None,
                                 web_log_filename=web_log_file_path.name if web_log_file_path else None,
                             ), 400
