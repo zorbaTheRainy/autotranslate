@@ -12,7 +12,8 @@ services:
       # - CHECK_EVERY_X_MINUTES=15                                          # (optional) How often you want the inputDir scanned for new files
       # - ORIGINAL_BEFORE_TRANSLATION=0                                     # (optional) Should the original be prepended or appended to the translated PDF?
       # - TRANSLATE_FILENAME=1                                              # (optional) Should the filename of the PDF be translated?
-      # - NOTIFY_URLS='mailtos://example.com:12522?user=user1@example.com&pass=pass123&smtp=mail.example.com&from=joe@example.com&to=bob@example.com'
+      # - USE_WEB_SERVER=1                                                  # (optional) Should the web server be run?
+			# - NOTIFY_URLS='mailtos://example.com:12522?user=user1@example.com&pass=pass123&smtp=mail.example.com&from=joe@example.com&to=bob@example.com'
                                                                             # (optional) Apprise-style comma separated list of URLs to notify when errors or the final translation occurs.
     volumes:
       - /etc/localtime:/etc/localtime:ro                                    # (optional) sync to host time
