@@ -157,7 +157,7 @@ Run in directory monitor mode, with th defaults, but with 2 Apprise notification
 autotranslate.py --k YOUR_API_KEY --notify-urls 'mailto://boo:HisAppPassword@gmail.com,discord://4174216298/JHMHI8qBe7bk2ZwO5U711o3dV_js'
 ```
 
-#### Command Line Arguments (v2.3.0+)
+#### Command Line Arguments
 
 | Short | Long | Overrides ENV |
 | ----- | ---- | ------------- |
@@ -172,7 +172,8 @@ autotranslate.py --k YOUR_API_KEY --notify-urls 'mailto://boo:HisAppPassword@gma
 | `-N` | `--translate-filename` | TRANSLATE\_FILENAME |
 | `-u` | `--notify-urls` | NOTIFY\_URLS |
 | `-w` | `--web-server` | USE\_WEB\_SERVER |
-<br>
+
+
 | Short | Long | Meaning |
 | ----- | ---- | ------- |
 | `-h` | `--help` | Prints out the standard "how to use" message |
