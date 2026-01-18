@@ -299,7 +299,8 @@ def parse_args() -> argparse.Namespace:
                                         action="store_const", const=True, default=None,
                                         help="If set, modify filename to indicate translation.")
     parser.add_argument("-u", "--notify-urls", help="Comma-separated Apprise URLs for notifications.")
-    parser.add_argument("-w", "--web-server", action="store_true", help="Run web interface alongside monitoring.")
+    parser.add_argument("-w", "--web-server", dest="web_server",
+                                        action="store_const", const=True, default=None, help="Run web interface alongside monitoring.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser.parse_args()
 
