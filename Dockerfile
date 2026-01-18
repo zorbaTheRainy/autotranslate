@@ -28,6 +28,6 @@ RUN pip3 install -r requirements.txt && \
 COPY autotranslate_web_server.py autotranslate_web_server.py
 COPY html/* html/.
 
-ENTRYPOINT ["./autotranslate.py --web-server"]
+ENTRYPOINT ["./autotranslate.py"]
 
 EXPOSE 8010
