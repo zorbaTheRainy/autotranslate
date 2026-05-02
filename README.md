@@ -217,10 +217,12 @@ The normal script behaviour, via the input/output directories, is still availabl
 * **Job History**: Access completed translations and their results (good onl until reboot, or some other programs - like Paperless - moves the output file)
 
 Figure 1: Initial state of the web interface showing the upload form and options.
-<img src="https://raw.githubusercontent.com/zorbaTheRainy/main/documentation/images/web_ui_initial.png" alt="Web UI Initial State" style="width: 80%; height: auto;">
+<img src="https://raw.githubusercontent.com/zorbaTheRainy/autotranslate/main/documentation/images/web_ui_initial.png"
+     alt="Web UI Initial State"
+     style="width: 80%; height: auto;">
 
 Figure 2: Web interface during an active translation showing log/progress monitoring.
-<img src="https://raw.githubusercontent.com/zorbaTheRainy/main/documentation/images/web_ui_translation.png" alt="Web UI During Translation" style="width: 80%; height: auto;">
+<img src="https://raw.githubusercontent.com/zorbaTheRainy/autotranslate/main/documentation/images/web_ui_translation.png" alt="Web UI During Translation" style="width: 80%; height: auto;">
 
 #### Web Server Configuration
 
