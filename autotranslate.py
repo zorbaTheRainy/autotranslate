@@ -25,6 +25,7 @@ Features:
 # standard libraries
 import argparse                                # https://docs.python.org/3/library/argparse.html
 import atexit                                  # https://docs.python.org/3/library/atexit.html
+import calendar                                # https://docs.python.org/3/library/calendar.html
 import logging                                 # https://docs.python.org/3/library/logging.html
 import logging.handlers                        # https://docs.python.org/3/library/logging.handlers.html
 import os                                      # https://docs.python.org/3/library/os.html
@@ -327,7 +328,10 @@ def main() -> None:
         # close the global log file and any Apprise handlers and exit
         graceful_exit(2)   # Fatal error
 
-    # connect with the translation API before we do any processing
+    # Early health check on the translation API before processing.
+    # The translator returned here is intentionally discarded. process_file() creates its own
+    # fresh translator on each call because the program may idle between files for an extended
+    # period, and the connection cannot be assumed to still be valid.
     translator = confirm_api_connection(cfg.auth_key, cfg.server_url)
     if translator is None:
         logger.error("Unable to open translator.")
@@ -581,7 +585,8 @@ def build_config(args: Optional[argparse.Namespace] = None) -> Config:
         combined = []
         for item in notify_urls_args_raw + notify_urls_env_raw:
             if item not in seen:
-                logger.debug(f"Apprise, Combining URL: {item}")
+                _item_display = item if DEBUG_UNOBSCURE_API_KEY else (item.split("://")[0] + "://[REDACTED]")
+                logger.debug(f"Apprise, Combining URL: {_item_display}")
                 seen.add(item)
                 combined.append(item)
         new_cfg.notify_urls = combined
@@ -592,10 +597,11 @@ def build_config(args: Optional[argparse.Namespace] = None) -> Config:
             for url in new_cfg.notify_urls:
                 if not url or not url.strip():
                     continue
-                logger.debug(f"Apprise, Validating URL: {url}")
+                _url_display = url if DEBUG_UNOBSCURE_API_KEY else (url.split("://")[0] + "://[REDACTED]")
+                logger.debug(f"Apprise, Validating URL: {_url_display}")
                 # Apprise returns True if the URL is valid and supported
                 if apprise.Apprise().add(url.strip()):
-                    logger.debug(f"Apprise, Appending URL: {url}")
+                    logger.debug(f"Apprise, Appending URL: {_url_display}")
                     valid_urls.append(url.strip())
             new_cfg.notify_urls = valid_urls
     else:
@@ -1349,16 +1355,16 @@ def send_document_to_server(source_file: Union[str, Path], result_file: Union[st
             docID = m.group(1)
             docKey = m.group(2)
             logger.error(f"\tDocument ID:  {docID}")
-            logger.error(f"\tDocument Key: {docKey}")
+            logger.error(f"\tDocument Key: {docKey if DEBUG_UNOBSCURE_API_KEY else '[REDACTED]'}")
         if error.document_handle is not None:
             doc_id = error.document_handle.document_id
             doc_key = error.document_handle.document_key
             logger.error(f"\tDocument ID2:  {doc_id}")
-            logger.error(f"\tDocument Key2: {doc_key}")
+            logger.error(f"\tDocument Key2: {doc_key if DEBUG_UNOBSCURE_API_KEY else '[REDACTED]'}")
 
         result = False
         # the error was that the quota was not empty, but still too low to perform the document translation (i.e., it didn't raise a QuotaExceededException, but it is still the same issue)
-        if errMsg == "Quota for this billing period has been exceeded.": # note having to add the `.` because we added it in replace() above
+        if "Quota for this billing period has been exceeded" in errMsg: # using 'in' for resilience to minor DeepL message changes
             raise QuotaExceededException(error) from error # send this up the subroutine chain
     except deepl.exceptions.QuotaExceededException as error:
         logger.error("The quota for this billing period has been exceeded.")
@@ -1456,7 +1462,7 @@ def monitor_directory(cfg: Config) -> None:
     logger.info(f"Check interval: {cfg.check_period_min} minutes")
 
     # setup vars
-    check_period_sec = int(60 * cfg.check_period_min)  # convert minutes to seconds
+    check_period_sec = max(1, round(60 * cfg.check_period_min))  # convert minutes to seconds, ensure minimum 1 second
     did_flush = False # initialize flush flag for directory mode
 
     while True: # loop forever
@@ -1534,8 +1540,10 @@ def num_seconds_till_renewal(renewal_date: int, default_days: int = 7) -> int:
 
     if 1 <= renewal_date <= 31:
         now = pendulum.now("UTC")
-        # Construct this month's renewal date
-        renewal_this_month = pendulum.datetime(now.year, now.month, renewal_date, tz="UTC")
+        # Construct this month's renewal date, clamping to the last day of the month if necessary
+        last_day_of_month = calendar.monthrange(now.year, now.month)[1]
+        actual_day = min(renewal_date, last_day_of_month)
+        renewal_this_month = pendulum.datetime(now.year, now.month, actual_day, tz="UTC")
 
         # If renewal day already passed, schedule next month
         if renewal_this_month <= now:
@@ -1902,12 +1910,12 @@ def debug_dump(obj: Any, name="Object") -> None:
 
     if isinstance(obj, dict):
         for key, value in obj.items():
-            if (not DEBUG_UNOBSCURE_API_KEY) and ((key == "DEEPL_AUTH_KEY") or (key == "auth_key")):
+            if (not DEBUG_UNOBSCURE_API_KEY) and ((key == "DEEPL_AUTH_KEY") or (key == "auth_key") or (key == "notify_urls")):
                 value = re.sub(r"[A-Za-z0-9]", "*", value or "")
             logger.debug(f"{key:<20}: {value!r}")
     elif hasattr(obj, "__dict__"):
         for key, value in vars(obj).items():
-            if (not DEBUG_UNOBSCURE_API_KEY) and ((key == "DEEPL_AUTH_KEY") or (key == "auth_key")):
+            if (not DEBUG_UNOBSCURE_API_KEY) and ((key == "DEEPL_AUTH_KEY") or (key == "auth_key") or (key == "notify_urls")):
                 value = re.sub(r"[A-Za-z0-9]", "*", value or "")
             logger.debug(f"{key:<20}: {value!r}")
     else:

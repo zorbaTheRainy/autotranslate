@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'></text></svg>">
   <title>Translate PDF</title>
   <style>
     body {
@@ -172,6 +174,7 @@
       Drag & drop your PDF here or click to browse
       <input type="file" id="pdf-file" name="pdf_file" accept=".pdf" hidden>
     </div>
+    <div id="drop-error" style="display: none; color: #c7254e; margin-top: 0.5em; font-size: 0.9em;"></div>
 
     <div class="file-info" id="file-info" role="region" aria-live="polite">
       <span class="name" id="file-name">No file selected</span>
@@ -186,7 +189,7 @@
       <label for="target-language">Target Language:</label>
       <select id="target-language" name="target_language">
         {% for code, name in deepl_languages.items() %}
-          <option value="{{ code }}" {% if code == cfg.target_lang %}selected{% endif %}>
+          <option value="{{ code }}" {% if code == target_lang %}selected{% endif %}>
             {{ name }} ({{ code }})
           </option>
         {% endfor %}
@@ -196,7 +199,7 @@
     <div class="form-section">
       <div class="checkbox-group">
         <input type="checkbox" id="translate-filename" name="translate_filename"
-               value="yes" {% if cfg.translate_filename %}checked{% endif %}>
+               value="yes" {% if translate_filename %}checked{% endif %}>
         <label for="translate-filename">Translate filename</label>
       </div>
     </div>
@@ -204,13 +207,16 @@
     <div class="form-section">
       <div class="checkbox-group">
         <input type="checkbox" id="include-original" name="include_original"
-               value="yes" {% if cfg.put_original_first %}checked{% endif %}>
+               value="yes" {% if put_original_first %}checked{% endif %}>
         <label for="include-original">Include original before translated text</label>
       </div>
     </div>
 
     <div class="submit-row">
-      <button type="submit">Translate</button>
+      <button type="submit" id="submit-btn">Translate</button>
+    </div>
+    <div id="polling-status" style="display: none; text-align: center; margin-top: 1em; color: #4E2A1E;">
+      <span> Waiting for translation output...</span>
     </div>
 
     <hr>
@@ -230,7 +236,7 @@
     <iframe
       src="/log/{{ jobs_log_filename }}?mode=realtime"
       height="300px"
-      title=""
+      title="Job log (live)"
     ></iframe>
   </div>
   {% endif %}
@@ -243,6 +249,9 @@
     const fileMetaEl = document.getElementById('file-meta');
     const changeBtn = document.getElementById('change-file');
     const removeBtn = document.getElementById('remove-file');
+    const dropError = document.getElementById('drop-error');
+    const submitBtn = document.getElementById('submit-btn');
+    const translateForm = document.getElementById('translate-form');
 
     function humanFileSize(bytes) {
       if (bytes === 0) return '0 B';
@@ -284,6 +293,13 @@
       e.preventDefault();
       dropZone.classList.remove('dragover');
       if (e.dataTransfer.files.length) {
+        const file = e.dataTransfer.files[0];
+        if (!file.name.toLowerCase().endsWith('.pdf')) {
+          dropError.textContent = ' Only PDF files are allowed';
+          dropError.style.display = 'block';
+          return;
+        }
+        dropError.style.display = 'none';
         fileInput.files = e.dataTransfer.files;
         showFileInfo();
       }
@@ -307,6 +323,11 @@
       showFileInfo();
     });
 
+    translateForm.addEventListener('submit', (e) => {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Translating...';
+    });
+
     document.addEventListener('DOMContentLoaded', showFileInfo);
   </script>
 
@@ -315,6 +336,9 @@
     (function () {
       const jobId = {{ job_id | tojson }};
       if (!jobId) return;
+
+      const pollingStatus = document.getElementById('polling-status');
+      pollingStatus.style.display = 'block';
 
       let pdfOpened = false;
       const POLL_INTERVAL_MS = 2000;
@@ -328,7 +352,11 @@
           const data = await resp.json();
           if (data && data.ready && data.filename) {
             pdfOpened = true;
+            pollingStatus.innerHTML = '<span style="color: #28a745;"> Translation complete! Opening PDF...</span>';
             window.open('/output/' + encodeURIComponent(data.filename), '_blank');
+            setTimeout(() => {
+              pollingStatus.style.display = 'none';
+            }, 2000);
             clearInterval(pollTimer);
           }
         } catch (err) {
@@ -342,6 +370,7 @@
       setTimeout(() => {
         if (!pdfOpened) {
           clearInterval(pollTimer);
+          pollingStatus.innerHTML = '<span style="color: #c7254e;"> Translation timeout (10 minutes). Check the Service Log for details.</span>';
           console.warn('Stopped polling for job', jobId, 'after timeout');
         }
       }, POLL_TIMEOUT_MS);

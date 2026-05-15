@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'></text></svg>">
   <title>{{ title }}</title>
   <style>
     body {
@@ -61,6 +63,26 @@
       background-color: #6A3B2A;
     }
   </style>
+</head>
+<body>
+  <div class="error-container">
+    <h1>{{ header }}</h1>
+    <hr>
+    <p>{{ error_message }}</p>
+    {% if is_quota %}
+    <p>Quota renews in: <span id="countdown" class="countdown"></span></p>
+    {% else %}
+    <p><a href="/" style="color: #4E2A1E; text-decoration: none; font-weight: bold; border: 1px solid #4E2A1E; padding: 0.5em 1em; border-radius: 4px; display: inline-block; margin-top: 1em; background-color: #fff; cursor: pointer;" onmouseover="this.style.backgroundColor='#f0e0da'" onmouseout="this.style.backgroundColor='#fff'"><- Back to Main</a></p>
+    {% endif %}
+  </div>
+  <!-- Buttons -->
+  <div class="link-buttons-row">
+    <a href="/log/{{ global_log_filename }}" target="_blank">Service Log</a>
+    <a href="/log/{{ web_log_filename }}" target="_blank">Web Log</a>
+    <a href="/status" target="_blank">Web History</a>
+    <a href="https://www.deepl.com/en/your-account/summary" target="_blank">DeepL User Page</a>
+  </div>
+
   {% if is_quota %}
   <script>
     function updateCountdown() {
@@ -80,26 +102,10 @@
         document.getElementById('countdown').textContent = countdown.trim();
       }
     }
+    updateCountdown();
     setInterval(updateCountdown, 1000);
   </script>
   {% endif %}
-</head>
-<body>
-  <div class="error-container">
-    <h1>{{ header }}</h1>
-    <hr>
-    <p>{{ error_message }}</p>
-    {% if is_quota %}
-    <p>Quota renews in: <span id="countdown" class="countdown"></span></p>
-    {% endif %}
-  </div>
-  <!-- Buttons -->
-  <div class="link-buttons-row">
-    <a href="/log/{{ global_log_filename }}" target="_blank">Service Log</a>
-    <a href="/log/{{ web_log_filename }}" target="_blank">Web Log</a>
-    <a href="/status" target="_blank">Web History</a>
-    <a href="https://www.deepl.com/en/your-account/summary" target="_blank">DeepL User Page</a>
-  </div>
 
 </body>
 </html>

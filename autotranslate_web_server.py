@@ -26,9 +26,11 @@ Usage:
 """
 
 # standard libraries
+import atexit                                  # https://docs.python.org/3/library/atexit.html
 import copy                                    # https://docs.python.org/3/library/copy.html
 import logging                                 # https://docs.python.org/3/library/logging.html
 import logging.handlers                        # https://docs.python.org/3/library/logging.handlers.html
+import re                                      # https://docs.python.org/3/library/re.html
 import sys                                     # https://docs.python.org/3/library/sys.html
 import threading                               # https://docs.python.org/3/library/threading.html
 import time                                    # https://docs.python.org/3/library/time.html
@@ -69,8 +71,6 @@ class LogEndpointFilter(logging.Filter):
     def filter(self, record):
         if record.name == "werkzeug":
             msg = record.getMessage()
-            # Check for GET /log/filename HTTP/1.1" 200
-            import re
             # match = re.search(r'GET /log/([^"]+) HTTP/[^"]+" 200', msg)
             match = re.search(r'"(?:GET|HEAD)\s+/log/([^?\s"]+)(?:\?[^"\s]*)?\s+HTTP/[^"]+"\s+200\b', msg)
             if match:
@@ -119,6 +119,9 @@ def start_web_server(cli_cfg: autotranslate.Config) -> None:
 
     # init logger, and start output to STDOUT
     setup_web_stdout_logging()
+
+    # Register graceful exit handler
+    atexit.register(graceful_exit, 0)
 
     # Wee bit of error checking
     if (cfg is None):
@@ -220,7 +223,9 @@ def index():
 
 
     return render_template( "index.html",
-                            cfg=cfg,
+                            target_lang=cfg.target_lang,
+                            translate_filename=cfg.translate_filename,
+                            put_original_first=cfg.put_original_first,
                             deepl_languages=autotranslate.get_deepl_languages(),
                             global_log_filename=global_log_filename,
                             web_log_filename=web_log_file_path.name if web_log_file_path else None,
@@ -345,6 +350,10 @@ def serve_output(filename: str):
 
     path = cfg.output_dir / filename
 
+    # verify the resolved path stays inside output_dir (path traversal check)
+    if (not path.resolve().is_relative_to(cfg.output_dir.resolve())):
+        abort(403)
+
     # final checks: file must exist and be a regular file
     if (not path.exists()) or (not path.is_file()):
         abort(404)
@@ -382,6 +391,10 @@ def download(dl_type: str, filename: str):
     # build the candidate file path
     path = dir_path / filename
 
+    # verify the resolved path stays inside dir_path (path traversal check)
+    if (not path.resolve().is_relative_to(dir_path.resolve())):
+        abort(403)
+
     # final checks: file must exist and be a regular file
     if (not path.exists()) or (not path.is_file()):
         abort(404)
@@ -410,7 +423,7 @@ def report_scoreboard():
                 if entry.output_file.exists():
                     output_link = f'<a href="/download/output/{entry.output_file.name}" target="_blank">{entry.output_file.name}</a>'
                 else:
-                    output_link = f'{entry.output_file.name} (Deleted)'
+                    output_link = '<em>In Progress...</em>'
             else:
                 output_link = 'None'
 
@@ -420,6 +433,8 @@ def report_scoreboard():
                 'log_link': log_link,
                 'output_link': output_link,
             })
+
+        jobs.reverse()
 
     return render_template("status.html", jobs=jobs)
 
@@ -438,10 +453,17 @@ def file_log(log_filename: str):
     # get the mode (e.g., realtime)
     mode = request.args.get("mode", None)
 
-    log_dir = cfg.log_dir if cfg else None
+    if (cfg is None):
+        log_dir = None
+    else:
+        log_dir = cfg.log_dir
     if not log_dir:
         log_dir = Path("/tmp")
     log_path = log_dir / log_filename
+
+    # verify the resolved path stays inside log_dir (path traversal check)
+    if (not log_path.resolve().is_relative_to(log_dir.resolve())):
+        abort(403)
 
     if not log_path.exists() or not log_path.is_file():
         return f"<p>No log file found: {log_path}</p>", 404
@@ -503,11 +525,13 @@ def run_process_file(file_path: Union[str, Path], config: autotranslate.Config) 
         web_logger.error(f"{e}")
         # close the global log file and any Apprise handlers and exit
         if isinstance(e, autotranslate.QuotaExceededException):
-            is_quota_exceeded = True  # Quota exceeded exit code
+            with quota_lock:
+                is_quota_exceeded = True  # Quota exceeded exit code
         else:
             # Fatal error
-            is_fatal_error = True
-            fatal_error_reason = str(e)
+            with fatal_error_lock:
+                is_fatal_error = True
+                fatal_error_reason = type(e).__name__
         return False
 
 # Callback: fires immediately when per-file log is created
@@ -593,7 +617,7 @@ def add_web_file_logging() -> Optional[Path]:
     web_logger.info(f'----------------------------------------')
     web_logger.info(f'')
 
-    # Force werkzeug (Flack) to use the same handlers as web_logger
+    # Force werkzeug (Flask) to use the same handlers as web_logger
     logging.getLogger("werkzeug").handlers = web_logger.handlers
     logging.getLogger("werkzeug").propagate = False
     logging.getLogger("werkzeug").setLevel(logging.INFO)
