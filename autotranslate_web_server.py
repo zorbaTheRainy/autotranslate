@@ -222,6 +222,7 @@ def index():
     web_logger.info(f"\t Entered log file into scoreboard entry: {jobs_log_filename}")
 
 
+    assert cfg is not None
     return render_template( "index.html",
                             target_lang=cfg.target_lang,
                             translate_filename=cfg.translate_filename,
