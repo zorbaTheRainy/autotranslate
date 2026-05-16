@@ -19,3 +19,6 @@ tmp*.*
 test
 folders/
 stack.env
+
+
+.coverage
