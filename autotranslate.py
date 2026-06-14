@@ -620,7 +620,7 @@ def build_config(args: Optional[argparse.Namespace] = None) -> Config:
 
     # set a default value, which is hopefully the value from the last run
     # new_cfg.global_log_file_path = new_cfg.log_dir / f"_{__name__}.log"
-    new_cfg.global_log_file_path = new_cfg.log_dir /f"_{Path(__file__).stem}.log"
+    new_cfg.global_log_file_path = new_cfg.log_dir / f"_{Path(__file__).stem}.log"
 
     return new_cfg
 
@@ -1919,13 +1919,19 @@ def debug_dump(obj: Any, name="Object") -> None:
 
     if isinstance(obj, dict):
         for key, value in obj.items():
-            if (not DEBUG_UNOBSCURE_API_KEY) and ((key == "DEEPL_AUTH_KEY") or (key == "auth_key") or (key == "notify_urls")):
-                value = re.sub(r"[A-Za-z0-9]", "*", value or "")
+            if not DEBUG_UNOBSCURE_API_KEY:
+                if key in ("DEEPL_AUTH_KEY", "auth_key") and isinstance(value, str):
+                    value = re.sub(r"[A-Za-z0-9]", "*", value or "")
+                elif key == "notify_urls" and isinstance(value, list):
+                    value = [re.sub(r"[A-Za-z0-9]", "*", url) if isinstance(url, str) else url for url in value]
             logger.debug(f"{key:<20}: {value!r}")
     elif hasattr(obj, "__dict__"):
         for key, value in vars(obj).items():
-            if (not DEBUG_UNOBSCURE_API_KEY) and ((key == "DEEPL_AUTH_KEY") or (key == "auth_key") or (key == "notify_urls")):
-                value = re.sub(r"[A-Za-z0-9]", "*", value or "")
+            if not DEBUG_UNOBSCURE_API_KEY:
+                if key in ("DEEPL_AUTH_KEY", "auth_key") and isinstance(value, str):
+                    value = re.sub(r"[A-Za-z0-9]", "*", value or "")
+                elif key == "notify_urls" and isinstance(value, list):
+                    value = [re.sub(r"[A-Za-z0-9]", "*", url) if isinstance(url, str) else url for url in value]
             logger.debug(f"{key:<20}: {value!r}")
     else:
         logger.debug(f"(Unsupported type: {type(obj).__name__})")
