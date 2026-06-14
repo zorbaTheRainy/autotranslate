@@ -26,6 +26,7 @@ Features:
 import argparse                                # https://docs.python.org/3/library/argparse.html
 import atexit                                  # https://docs.python.org/3/library/atexit.html
 import calendar                                # https://docs.python.org/3/library/calendar.html
+import copy                                    # https://docs.python.org/3/library/copy.html
 import logging                                 # https://docs.python.org/3/library/logging.html
 import logging.handlers                        # https://docs.python.org/3/library/logging.handlers.html
 import os                                      # https://docs.python.org/3/library/os.html
@@ -126,6 +127,14 @@ class Config:
     callback_on_file_complete: Optional[Callable[[Path], None]] = None
     callback_on_fatal_error: Optional[Callable[[str], None]] = None
     callback_on_quota_exceeded: Optional[Callable[[], None]] = None
+
+    def __deepcopy__(self, memo: dict) -> "Config":
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            setattr(result, k, None if k == "global_log_file_handler" else copy.deepcopy(v, memo))
+        return result
 
 @dataclass
 class ConfigNonContainerDefaults(Config):
